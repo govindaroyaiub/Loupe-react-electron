@@ -4,3 +4,6 @@ out
 .DS_Store
 .eslintcache
 *.log*
+
+# Local context file for Claude assistant (not for the repo)
+LOUPE_CONTEXT.md
