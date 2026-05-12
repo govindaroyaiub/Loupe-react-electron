@@ -15,6 +15,14 @@ const loupe = {
     ipcRenderer.on('menu:canvas', listener)
     return () => ipcRenderer.off('menu:canvas', listener)
   },
+  onUpdateEvent: (handler: (msg: { event: string; payload?: unknown }) => void) => {
+    const listener = (_e: IpcRendererEvent, msg: { event: string; payload?: unknown }) =>
+      handler(msg)
+    ipcRenderer.on('update:event', listener)
+    return () => ipcRenderer.off('update:event', listener)
+  },
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  installUpdate: () => ipcRenderer.invoke('update:install-now'),
   showSaveDialog: (opts: { defaultPath?: string; filters?: FileFilter[] }) =>
     ipcRenderer.invoke('fs:show-save-dialog', opts) as Promise<string | null>,
   showFolderDialog: (opts: { defaultPath?: string }) =>

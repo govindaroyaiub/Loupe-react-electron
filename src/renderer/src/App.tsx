@@ -8,6 +8,7 @@ import { Rulers, RULER_THICKNESS } from './components/Rulers'
 import { MarqueePanel } from './components/MarqueePanel'
 import { GuidesPanel } from './components/GuidesPanel'
 import { RulesPanel } from './components/RulesPanel'
+import { UpdateBanner } from './components/UpdateBanner'
 import { StatusBar } from './components/StatusBar'
 import { buildSoloVisibility, collectInitialVisibility } from './lib/layers'
 import { flatLeafOrder, applyClick } from './lib/selection'
@@ -578,6 +579,7 @@ function App(): React.JSX.Element {
         onOpen={openPsd}
         onExport={openExport}
       />
+      <UpdateBanner />
       {error && <div className="banner error">{error}</div>}
       {compatWarning && <div className="banner warning">{compatWarning}</div>}
       <main className="workspace">

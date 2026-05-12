@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog, Menu, MenuItemConstructorOp
 import { join } from 'path'
 import { promises as fsp } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.png?asset'
 import { parsePsdFile } from './psd'
 
@@ -76,6 +77,35 @@ function triggerOpenFromMenu(): void {
 function sendCanvas(action: string): void {
   if (!mainWindow) return
   mainWindow.webContents.send('menu:canvas', action)
+}
+
+function sendUpdate(event: string, payload?: unknown): void {
+  if (!mainWindow) return
+  mainWindow.webContents.send('update:event', { event, payload })
+}
+
+function setupAutoUpdater(): void {
+  // Don't try to check for updates while running in dev.
+  if (is.dev) return
+
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => sendUpdate('checking'))
+  autoUpdater.on('update-available', (info) => sendUpdate('available', info))
+  autoUpdater.on('update-not-available', (info) => sendUpdate('not-available', info))
+  autoUpdater.on('error', (err) => sendUpdate('error', String(err)))
+  autoUpdater.on('download-progress', (p) => sendUpdate('progress', p))
+  autoUpdater.on('update-downloaded', (info) => sendUpdate('downloaded', info))
+
+  autoUpdater.checkForUpdates().catch(() => {})
+  // Re-check every 4 hours while the app stays open.
+  setInterval(
+    () => {
+      autoUpdater.checkForUpdates().catch(() => {})
+    },
+    4 * 60 * 60 * 1000,
+  )
 }
 
 function buildMenu(): void {
@@ -177,6 +207,23 @@ app.whenReady().then(() => {
     shell.showItemInFolder(filePath)
     return true
   })
+
+  ipcMain.handle('update:check', async () => {
+    if (is.dev) return { skipped: 'dev' }
+    try {
+      const result = await autoUpdater.checkForUpdates()
+      return { ok: true, version: result?.updateInfo?.version }
+    } catch (err) {
+      return { error: String(err) }
+    }
+  })
+
+  ipcMain.handle('update:install-now', async () => {
+    autoUpdater.quitAndInstall()
+    return true
+  })
+
+  setupAutoUpdater()
 
   buildMenu()
   createWindow()

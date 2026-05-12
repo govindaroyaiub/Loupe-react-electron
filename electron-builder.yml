@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: loupe
+appId: com.loupe.app
+productName: Loupe
 directories:
   buildResources: build
 files:
@@ -39,5 +39,7 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 publish:
-  provider: generic
-  url: https://example.com/auto-updates
+  provider: github
+  owner: govindaroyaiub
+  repo: Loupe-react-electron
+  releaseType: release
