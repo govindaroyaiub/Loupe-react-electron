@@ -19,6 +19,12 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  # Ad-hoc sign every binary in the bundle with the same identity so macOS
+  # library validation doesn't reject the Electron Framework. Required for
+  # unsigned/personal builds on macOS Sequoia (arm64).
+  identity: '-'
+  gatekeeperAssess: false
+  hardenedRuntime: false
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
