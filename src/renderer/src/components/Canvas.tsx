@@ -5,12 +5,13 @@ import type {
   DraggingGuide,
   GridConfig,
   Guide,
+  LayerOffset,
   MarqueeRect,
   ParsedPsd,
   Tool,
 } from '../types'
 import { blobUrlFor } from '../lib/blob-url'
-import { findLayerAt, flattenLeaves } from '../lib/layers'
+import { flattenLeaves } from '../lib/layers'
 import { screenToDoc, zoomAt, type ViewState } from '../lib/view'
 
 const CLICK_THRESHOLD_PX = 3
@@ -18,6 +19,7 @@ const CLICK_THRESHOLD_PX = 3
 interface CanvasProps {
   doc: ParsedPsd
   visibility: Record<string, boolean>
+  offsets: Record<string, LayerOffset>
   selection: Set<string>
   view: ViewState
   onViewChange: (next: ViewState) => void
@@ -29,7 +31,20 @@ interface CanvasProps {
   guides: Guide[]
   draggingGuide: DraggingGuide | null
   onGuideMouseDown: (guideId: string) => void
-  onCanvasSelectLayer: (layerId: string) => void
+  /** ⌘/Alt+click: solo the topmost hit layer. */
+  onCanvasSoloLayer: (layerId: string) => void
+  /** Sync alpha-aware hit-test owned by App. */
+  hitTestLayer: (docX: number, docY: number) => string | null
+  /** Replace selection with a single layer. */
+  onSelectLayer: (layerId: string) => void
+  /** Toggle a layer's membership in the current selection (Shift+click). */
+  onToggleSelectLayer: (layerId: string) => void
+  onClearSelection: () => void
+  /** Begin a drag of the given layer ids — App snapshots offsets + history. */
+  onBeginLayerDrag: (ids: string[]) => void
+  /** Live drag update: apply (dx, dy) PSD-px delta to the drag baseline. */
+  onUpdateLayerDrag: (dx: number, dy: number) => void
+  onEndLayerDrag: () => void
   viewportWidth: number
   viewportHeight: number
   onMousePos: (pos: { x: number; y: number } | null) => void
@@ -91,6 +106,7 @@ function buildGridLines(
 export function Canvas({
   doc,
   visibility,
+  offsets,
   selection,
   view,
   onViewChange,
@@ -102,7 +118,14 @@ export function Canvas({
   guides,
   draggingGuide,
   onGuideMouseDown,
-  onCanvasSelectLayer,
+  onCanvasSoloLayer,
+  hitTestLayer,
+  onSelectLayer,
+  onToggleSelectLayer,
+  onClearSelection,
+  onBeginLayerDrag,
+  onUpdateLayerDrag,
+  onEndLayerDrag,
   viewportWidth,
   viewportHeight,
   onMousePos,
@@ -118,6 +141,13 @@ export function Canvas({
         startDocY: number
         maxMoveSq: number
       }
+    | {
+        kind: 'move-layers'
+        startScreenX: number
+        startScreenY: number
+        ids: string[]
+        started: boolean
+      }
     | null
   >(null)
 
@@ -129,15 +159,16 @@ export function Canvas({
       .filter((l) => selection.has(l.id))
       .map((l) => {
         const b = l.node.bounds
+        const off = offsets[l.id] ?? { x: 0, y: 0 }
         return {
           id: l.id,
-          x: b.left,
-          y: b.top,
+          x: b.left + off.x,
+          y: b.top + off.y,
           width: Math.max(1, b.right - b.left),
           height: Math.max(1, b.bottom - b.top),
         }
       })
-  }, [selection, leaves])
+  }, [selection, leaves, offsets])
 
   const gridLines = useMemo(
     () => (grid.enabled ? buildGridLines(doc.width, doc.height, grid.spacing) : []),
@@ -163,6 +194,7 @@ export function Canvas({
     if (!pointer) return
 
     // Cmd (Mac) / Alt (Win) + click: solo the topmost layer under cursor.
+    // Takes precedence over plain-click select/drag and over Shift+click.
     if (e.evt.metaKey || e.evt.altKey) {
       const docPosForSelect = screenToDoc(view, pointer.x, pointer.y)
       const inDoc =
@@ -171,8 +203,8 @@ export function Canvas({
         docPosForSelect.y >= 0 &&
         docPosForSelect.y <= doc.height
       if (inDoc) {
-        const hit = findLayerAt(doc.layers, visibility, docPosForSelect.x, docPosForSelect.y)
-        if (hit) onCanvasSelectLayer(hit.id)
+        const hitId = hitTestLayer(docPosForSelect.x, docPosForSelect.y)
+        if (hitId) onCanvasSoloLayer(hitId)
       }
       return
     }
@@ -195,6 +227,43 @@ export function Canvas({
         onGuideMouseDown(g.id)
         return
       }
+    }
+
+    if (effectiveTool === 'select') {
+      const docPos = screenToDoc(view, pointer.x, pointer.y)
+      const inDoc =
+        docPos.x >= 0 && docPos.x <= doc.width && docPos.y >= 0 && docPos.y <= doc.height
+      const hitId = inDoc ? hitTestLayer(docPos.x, docPos.y) : null
+
+      if (e.evt.shiftKey) {
+        // Shift+click adds/removes from selection. No drag.
+        if (hitId) onToggleSelectLayer(hitId)
+        return
+      }
+
+      if (!hitId) {
+        // Click on empty area clears selection.
+        onClearSelection()
+        return
+      }
+
+      // If the clicked layer wasn't already selected, replace selection with
+      // it. Either way, prepare a drag operation against the current set.
+      let targetIds: string[]
+      if (selection.has(hitId)) {
+        targetIds = Array.from(selection)
+      } else {
+        onSelectLayer(hitId)
+        targetIds = [hitId]
+      }
+      dragStateRef.current = {
+        kind: 'move-layers',
+        startScreenX: pointer.x,
+        startScreenY: pointer.y,
+        ids: targetIds,
+        started: false,
+      }
+      return
     }
 
     if (effectiveTool === 'hand') {
@@ -258,6 +327,25 @@ export function Canvas({
     const drag = dragStateRef.current
     if (!drag) return
 
+    if (drag.kind === 'move-layers') {
+      const dxScreen = pointer.x - drag.startScreenX
+      const dyScreen = pointer.y - drag.startScreenY
+      if (!drag.started) {
+        // Wait until the user has actually moved past the click threshold
+        // before committing to a drag — a plain click shouldn't start one.
+        if (dxScreen * dxScreen + dyScreen * dyScreen < CLICK_THRESHOLD_PX * CLICK_THRESHOLD_PX) {
+          return
+        }
+        drag.started = true
+        onBeginLayerDrag(drag.ids)
+      }
+      // Screen→doc delta is just /scale (no offset rebasing for a delta).
+      const dx = dxScreen / view.scale
+      const dy = dyScreen / view.scale
+      onUpdateLayerDrag(dx, dy)
+      return
+    }
+
     if (drag.kind === 'pan') {
       onViewChange({
         scale: view.scale,
@@ -282,7 +370,12 @@ export function Canvas({
   function handleMouseUp() {
     const drag = dragStateRef.current
     dragStateRef.current = null
-    if (!drag || drag.kind !== 'marquee') return
+    if (!drag) return
+    if (drag.kind === 'move-layers') {
+      if (drag.started) onEndLayerDrag()
+      return
+    }
+    if (drag.kind !== 'marquee') return
 
     const wasDrag = drag.maxMoveSq > CLICK_THRESHOLD_PX * CLICK_THRESHOLD_PX
 
@@ -371,17 +464,19 @@ export function Canvas({
         listening={false}
         clip={{ x: 0, y: 0, width: doc.width, height: doc.height }}
       >
-        {leaves.map((leaf) =>
-          leaf.node.image ? (
+        {leaves.map((leaf) => {
+          if (!leaf.node.image) return null
+          const off = offsets[leaf.id] ?? { x: 0, y: 0 }
+          return (
             <LeafLayer
               key={leaf.id}
               bytes={leaf.node.image}
-              x={leaf.node.bounds.left}
-              y={leaf.node.bounds.top}
+              x={leaf.node.bounds.left + off.x}
+              y={leaf.node.bounds.top + off.y}
               visible={leaf.effectiveVisible}
             />
-          ) : null,
-        )}
+          )
+        })}
       </Layer>
       <Layer listening={false}>
         <Rect

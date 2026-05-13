@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Rule } from '../types'
+import { CloseIcon } from './icons'
 
 interface RulesPanelProps {
   rules: Rule[]
@@ -114,7 +115,7 @@ function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: R
           </button>
         )}
         <button className="icon-btn" onClick={() => onDelete(rule.id)} aria-label="Delete rule">
-          ✕
+          <CloseIcon size={14} />
         </button>
       </div>
       <div className="rule-summary">{summary(rule, is2x)}</div>

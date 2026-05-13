@@ -10,7 +10,9 @@ import { GuidesPanel } from './components/GuidesPanel'
 import { RulesPanel } from './components/RulesPanel'
 import { UpdateBanner } from './components/UpdateBanner'
 import { StatusBar } from './components/StatusBar'
+import { CrosshairIcon } from './components/icons'
 import { buildSoloVisibility, collectInitialVisibility } from './lib/layers'
+import { findLayerAtAlpha, warmAlphaCache } from './lib/hit-test'
 import { flatLeafOrder, applyClick } from './lib/selection'
 import { fitView, setZoom, zoomAt, type ViewState } from './lib/view'
 import type {
@@ -19,11 +21,17 @@ import type {
   Guide,
   GuideOrientation,
   LayerNode,
+  LayerOffset,
   MarqueeRect,
   OpenedDocument,
   Rule,
   Tool,
 } from './types'
+
+interface DocStateSnapshot {
+  visibility: Record<string, boolean>
+  offsets: Record<string, LayerOffset>
+}
 
 function basenameNoExt(p: string): string {
   const base = p.split(/[\\/]/).pop() ?? p
@@ -50,12 +58,13 @@ function isTypingInField(target: EventTarget | null): boolean {
 
 function App(): React.JSX.Element {
   const [doc, setDoc] = useState<OpenedDocument | null>(null)
-  // Combined state so visibility + its undo history update atomically.
-  const [visState, setVisState] = useState<{
-    current: Record<string, boolean>
-    history: Record<string, boolean>[]
-  }>({ current: {}, history: [] })
-  const visibility = visState.current
+  // Combined state so visibility, layer offsets, and their undo history update atomically.
+  const [docState, setDocState] = useState<{
+    current: DocStateSnapshot
+    history: DocStateSnapshot[]
+  }>({ current: { visibility: {}, offsets: {} }, history: [] })
+  const visibility = docState.current.visibility
+  const offsets = docState.current.offsets
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [anchorId, setAnchorId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -75,7 +84,7 @@ function App(): React.JSX.Element {
   const [rules, setRules] = useState<Rule[]>([])
   const [focusRuleId, setFocusRuleId] = useState<string | null>(null)
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set())
-  const VISIBILITY_HISTORY_MAX = 50
+  const HISTORY_MAX = 50
 
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const [viewport, setViewport] = useState({ width: 800, height: 600 })
@@ -89,6 +98,23 @@ function App(): React.JSX.Element {
   useEffect(() => {
     if (doc) docDimsRef.current = { width: doc.parsed.width, height: doc.parsed.height }
   }, [doc])
+
+  // Pre-decode every leaf layer's image for alpha-aware hit testing as soon
+  // as a doc is opened. The first click after open falls back to bbox; later
+  // clicks are pixel-accurate.
+  useEffect(() => {
+    if (!doc) return
+    warmAlphaCache(doc.parsed.layers).catch(() => {
+      /* decode failures fall back to bbox automatically */
+    })
+  }, [doc])
+
+  // Live drag baseline: offsets snapshot + ids captured at mousedown so each
+  // mousemove can apply a pristine delta instead of compounding rounding.
+  const dragBaselineRef = useRef<{
+    ids: string[]
+    baseline: Record<string, LayerOffset>
+  } | null>(null)
 
   useLayoutEffect(() => {
     if (!viewportRef.current) return
@@ -239,7 +265,10 @@ function App(): React.JSX.Element {
       const result = await window.loupe.pickAndParsePsd()
       if (result) {
         setDoc(result)
-        setVisState({ current: collectInitialVisibility(result.parsed.layers), history: [] })
+        setDocState({
+          current: { visibility: collectInitialVisibility(result.parsed.layers), offsets: {} },
+          history: [],
+        })
         setSelection(new Set())
         setAnchorId(null)
         setMarquee(null)
@@ -282,27 +311,116 @@ function App(): React.JSX.Element {
     [selection, anchorId, leafOrder],
   )
 
-  // Single atomic setState: append the current visibility to history AND swap
-  // in the new visibility in one go. Avoids the nested-setState pitfall.
+  // Single atomic setState: append the current snapshot to history AND swap in
+  // the new visibility in one go. Avoids the nested-setState pitfall.
   const commitVisibilityChange = useCallback(
     (nextFor: (current: Record<string, boolean>) => Record<string, boolean>) => {
-      // eslint-disable-next-line no-console
-      console.log('[Loupe history] commit CALLED')
-      setVisState((s) => {
-        const snap = { ...s.current }
-        const nextHistory = [...s.history, snap]
-        if (nextHistory.length > VISIBILITY_HISTORY_MAX) nextHistory.shift()
-        const onCount = Object.values(snap).filter(Boolean).length
-        // eslint-disable-next-line no-console
-        console.log(
-          '[Loupe history] PUSH depth=' + nextHistory.length,
-          'eyesOn=' + onCount,
-        )
-        return { current: nextFor(s.current), history: nextHistory }
+      setDocState((s) => {
+        const snap = s.current
+        const nextHistory =
+          s.history.length >= HISTORY_MAX
+            ? [...s.history.slice(1), snap]
+            : [...s.history, snap]
+        return {
+          current: { ...snap, visibility: nextFor(snap.visibility) },
+          history: nextHistory,
+        }
       })
     },
     [],
   )
+
+  // Apply an offset change without pushing history. Used for live drag updates;
+  // caller is expected to pushHistory() once at drag start.
+  const updateOffsetsLive = useCallback(
+    (nextFor: (current: Record<string, LayerOffset>) => Record<string, LayerOffset>) => {
+      setDocState((s) => ({
+        current: { ...s.current, offsets: nextFor(s.current.offsets) },
+        history: s.history,
+      }))
+    },
+    [],
+  )
+
+  // Apply an offset change AND push a history snapshot. For discrete moves
+  // (arrow-key nudges).
+  const commitOffsetChange = useCallback(
+    (nextFor: (current: Record<string, LayerOffset>) => Record<string, LayerOffset>) => {
+      setDocState((s) => {
+        const snap = s.current
+        const nextHistory =
+          s.history.length >= HISTORY_MAX
+            ? [...s.history.slice(1), snap]
+            : [...s.history, snap]
+        return {
+          current: { ...snap, offsets: nextFor(snap.offsets) },
+          history: nextHistory,
+        }
+      })
+    },
+    [],
+  )
+
+  // Sync hit-test for the Select tool. Uses the alpha-aware lookup that
+  // respects current visibility + per-layer offsets. Falls back to bbox for
+  // any layer whose image hasn't decoded yet.
+  const hitTestLayer = useCallback(
+    (docX: number, docY: number): string | null => {
+      if (!doc) return null
+      const node = findLayerAtAlpha(doc.parsed.layers, visibility, offsets, docX, docY)
+      return node?.id ?? null
+    },
+    [doc, visibility, offsets],
+  )
+
+  const selectLayerById = useCallback((id: string) => {
+    setSelection(new Set([id]))
+    setAnchorId(id)
+  }, [])
+
+  const toggleSelectLayer = useCallback((id: string) => {
+    setSelection((sel) => {
+      const next = new Set(sel)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    setAnchorId(id)
+  }, [])
+
+  // Start a layer-drag: snapshot the offsets of the ids we'll be dragging,
+  // and push the current state onto history so undo reverts the whole drag.
+  const beginLayerDrag = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    setDocState((s) => {
+      const baseline: Record<string, LayerOffset> = {}
+      for (const id of ids) baseline[id] = s.current.offsets[id] ?? { x: 0, y: 0 }
+      dragBaselineRef.current = { ids, baseline }
+      const nextHistory =
+        s.history.length >= HISTORY_MAX
+          ? [...s.history.slice(1), s.current]
+          : [...s.history, s.current]
+      return { current: s.current, history: nextHistory }
+    })
+  }, [])
+
+  // Live update during drag — compute new offsets = baseline + (dx, dy).
+  const updateLayerDrag = useCallback((dx: number, dy: number) => {
+    const baseline = dragBaselineRef.current
+    if (!baseline) return
+    updateOffsetsLive((current) => {
+      const next = { ...current }
+      for (const id of baseline.ids) {
+        const b = baseline.baseline[id]
+        next[id] = { x: b.x + dx, y: b.y + dy }
+      }
+      return next
+    })
+  }, [updateOffsetsLive])
+
+  const endLayerDrag = useCallback(() => {
+    dragBaselineRef.current = null
+  }, [])
 
   // Manual eye toggle is also undoable — every visibility change pushes.
   const toggleVisibility = useCallback(
@@ -325,25 +443,15 @@ function App(): React.JSX.Element {
     [doc, commitVisibilityChange],
   )
 
-  const undoLastSolo = useCallback(() => {
-    if (visState.history.length === 0) {
-      // eslint-disable-next-line no-console
-      console.log('[Loupe history] POP empty — nothing to undo')
-      return false
-    }
-    setVisState((s) => {
+  const undoLast = useCallback(() => {
+    if (docState.history.length === 0) return false
+    setDocState((s) => {
       if (s.history.length === 0) return s
       const snap = s.history[s.history.length - 1]
-      const onCount = Object.values(snap).filter(Boolean).length
-      // eslint-disable-next-line no-console
-      console.log(
-        '[Loupe history] POP remaining=' + (s.history.length - 1),
-        'restoring snap with eyesOn=' + onCount,
-      )
       return { current: snap, history: s.history.slice(0, -1) }
     })
     return true
-  }, [visState.history.length])
+  }, [docState.history.length])
 
   const showAllLayers = useCallback(() => {
     if (!doc) return
@@ -500,11 +608,42 @@ function App(): React.JSX.Element {
           setSpaceHeld(true)
           return
         }
+
+        // Arrow-key nudge of selected layers (Select tool only).
+        if (
+          tool === 'select' &&
+          selection.size > 0 &&
+          (e.key === 'ArrowLeft' ||
+            e.key === 'ArrowRight' ||
+            e.key === 'ArrowUp' ||
+            e.key === 'ArrowDown')
+        ) {
+          e.preventDefault()
+          const cssToDoc = is2x ? 2 : 1
+          const stepCss = e.shiftKey ? 10 : 1
+          const step = stepCss * cssToDoc
+          let dx = 0
+          let dy = 0
+          if (e.key === 'ArrowLeft') dx = -step
+          else if (e.key === 'ArrowRight') dx = step
+          else if (e.key === 'ArrowUp') dy = -step
+          else if (e.key === 'ArrowDown') dy = step
+          const ids = Array.from(selection)
+          commitOffsetChange((current) => {
+            const next = { ...current }
+            for (const id of ids) {
+              const o = next[id] ?? { x: 0, y: 0 }
+              next[id] = { x: o.x + dx, y: o.y + dy }
+            }
+            return next
+          })
+          return
+        }
       }
 
-      // Undo the last solo action
+      // Undo the last action (visibility change OR layer move).
       if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-        if (undoLastSolo()) {
+        if (undoLast()) {
           e.preventDefault()
           return
         }
@@ -554,8 +693,11 @@ function App(): React.JSX.Element {
     }
   }, [
     marquee,
+    selection,
     selection.size,
     spaceHeld,
+    tool,
+    is2x,
     zoomIn,
     zoomOut,
     zoom100,
@@ -563,7 +705,8 @@ function App(): React.JSX.Element {
     openExport,
     clearMarquee,
     clearSelection,
-    undoLastSolo,
+    undoLast,
+    commitOffsetChange,
   ])
 
   const stageWidth = Math.max(0, viewport.width - RULER_THICKNESS)
@@ -604,6 +747,7 @@ function App(): React.JSX.Element {
                 <Canvas
                   doc={doc.parsed}
                   visibility={visibility}
+                  offsets={offsets}
                   selection={selection}
                   view={view}
                   onViewChange={setView}
@@ -615,7 +759,14 @@ function App(): React.JSX.Element {
                   guides={guides}
                   draggingGuide={draggingGuide}
                   onGuideMouseDown={onGuideMouseDown}
-                  onCanvasSelectLayer={onCanvasSelectLayer}
+                  onCanvasSoloLayer={onCanvasSelectLayer}
+                  hitTestLayer={hitTestLayer}
+                  onSelectLayer={selectLayerById}
+                  onToggleSelectLayer={toggleSelectLayer}
+                  onClearSelection={clearSelection}
+                  onBeginLayerDrag={beginLayerDrag}
+                  onUpdateLayerDrag={updateLayerDrag}
+                  onEndLayerDrag={endLayerDrag}
                   viewportWidth={stageWidth}
                   viewportHeight={stageHeight}
                   onMousePos={setMousePos}
@@ -654,7 +805,9 @@ function App(): React.JSX.Element {
             </>
           ) : (
             <div className="empty-state">
-              <div className="empty-glyph">⌖</div>
+              <div className="empty-glyph">
+                <CrosshairIcon size={56} />
+              </div>
               <h2>Open a PSD to begin</h2>
               <p>
                 Open a Photoshop file in Loupe to inspect layers, measure positions, and export

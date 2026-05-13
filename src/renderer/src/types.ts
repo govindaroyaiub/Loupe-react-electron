@@ -39,6 +39,12 @@ export interface OpenedDocument {
 
 export type Tool = 'select' | 'marquee' | 'hand'
 
+export interface LayerOffset {
+  /** PSD-space pixel deltas applied to a layer's bounds. */
+  x: number
+  y: number
+}
+
 export interface MarqueeRect {
   /** All values in document (@2x) coordinate space */
   x: number

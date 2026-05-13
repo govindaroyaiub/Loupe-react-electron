@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { MarqueeRect } from '../types'
+import { CloseIcon } from './icons'
 
 interface MarqueePanelProps {
   rect: MarqueeRect
@@ -143,7 +144,7 @@ export function MarqueePanel({
           + Rule
         </button>
         <button className="icon-btn" onClick={onClear} aria-label="Clear marquee">
-          ✕
+          <CloseIcon size={14} />
         </button>
       </div>
 

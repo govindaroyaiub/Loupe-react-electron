@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { LayerNode } from '../types'
 import type { BackgroundFill, ExportFormat, ExportOptions } from '../lib/export'
 import { planExports, renderLayerToBytes } from '../lib/export'
+import { ArrowRightIcon, CloseIcon } from './icons'
 
 interface ExportModalProps {
   layers: LayerNode[]
@@ -104,7 +105,7 @@ export function ExportModal({ layers, baseName, is2x, onClose }: ExportModalProp
         <header className="modal-header">
           <h2>Export {plan.length} {plan.length === 1 ? 'layer' : 'layers'}</h2>
           <button className="icon-btn" onClick={onClose} disabled={!!progress} aria-label="Close">
-            ✕
+            <CloseIcon size={14} />
           </button>
         </header>
 
@@ -275,9 +276,13 @@ export function ExportModal({ layers, baseName, is2x, onClose }: ExportModalProp
             onClick={startExport}
             disabled={!!progress && !progress.error}
           >
-            {progress && !progress.error
-              ? `${progress.done}/${progress.total}…`
-              : `Export →`}
+            {progress && !progress.error ? (
+              `${progress.done}/${progress.total}…`
+            ) : (
+              <span className="btn-with-icon">
+                Export <ArrowRightIcon size={14} />
+              </span>
+            )}
           </button>
         </footer>
       </div>

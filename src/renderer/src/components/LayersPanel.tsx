@@ -1,5 +1,6 @@
 import type { LayerNode } from '../types'
 import { blobUrlFor } from '../lib/blob-url'
+import { ChevronDownIcon, ChevronRightIcon, EyeOffIcon, EyeOnIcon, FolderIcon } from './icons'
 
 interface LayersPanelProps {
   layers: LayerNode[]
@@ -81,11 +82,13 @@ function LayerRow({
             }
           }}
         >
-          {visible ? '●' : '○'}
+          {visible ? <EyeOnIcon size={10} /> : <EyeOffIcon size={10} />}
         </button>
         <div className="thumb">
           {isGroup ? (
-            <span className="group-folder">▦</span>
+            <span className="group-folder">
+              <FolderIcon size={14} />
+            </span>
           ) : node.thumbnail ? (
             <img src={blobUrlFor(node.thumbnail)} alt="" />
           ) : (
@@ -112,7 +115,7 @@ function LayerRow({
               onToggleCollapsedGroup(node.id)
             }}
           >
-            {isCollapsed ? '▸' : '▾'}
+            {isCollapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
           </button>
         )}
       </div>

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Guide } from '../types'
+import { CloseIcon } from './icons'
 
 interface GuidesPanelProps {
   guides: Guide[]
@@ -102,7 +103,7 @@ export function GuidesPanel({
           </button>
         )}
         <button className="icon-btn" onClick={onClear} aria-label="Clear all guides" title="Clear all">
-          ✕
+          <CloseIcon size={14} />
         </button>
       </div>
 

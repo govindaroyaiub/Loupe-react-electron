@@ -243,10 +243,12 @@ button {
 }
 
 .empty-state .empty-glyph {
-  font-size: 56px;
   color: var(--text-faint);
   line-height: 1;
   margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .empty-state h2 {
@@ -744,8 +746,24 @@ button {
 }
 
 .tool-btn .glyph {
-  font-size: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
+}
+
+.tool-btn .glyph svg,
+.icon-btn svg,
+.layer-row .eye svg,
+.layer-row .group-folder svg,
+.layer-row .group-chevron-right svg {
+  display: block;
+}
+
+.btn-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tool-btn .kbd {

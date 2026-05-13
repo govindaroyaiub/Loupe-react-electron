@@ -1,4 +1,6 @@
+import type { ComponentType, SVGProps } from 'react'
 import type { GridConfig, Tool } from '../types'
+import { GridIcon, HandIcon, MarqueeIcon, MinusIcon, PlusIcon, SelectIcon } from './icons'
 
 interface ToolPaletteProps {
   tool: Tool
@@ -12,10 +14,12 @@ interface ToolPaletteProps {
   onZoom100: () => void
 }
 
-const TOOLS: { id: Tool; label: string; shortcut: string; glyph: string }[] = [
-  { id: 'select', label: 'Select', shortcut: 'V', glyph: '⬉' },
-  { id: 'marquee', label: 'Marquee', shortcut: 'M', glyph: '▭' },
-  { id: 'hand', label: 'Hand (Space)', shortcut: 'H', glyph: '✋' },
+type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>
+
+const TOOLS: { id: Tool; label: string; shortcut: string; Icon: IconComponent }[] = [
+  { id: 'select', label: 'Select', shortcut: 'V', Icon: SelectIcon },
+  { id: 'marquee', label: 'Marquee', shortcut: 'M', Icon: MarqueeIcon },
+  { id: 'hand', label: 'Hand (Space)', shortcut: 'H', Icon: HandIcon },
 ]
 
 export function ToolPalette({
@@ -39,7 +43,9 @@ export function ToolPalette({
             title={`${t.label} (${t.shortcut})`}
             onClick={() => onTool(t.id)}
           >
-            <span className="glyph">{t.glyph}</span>
+            <span className="glyph">
+              <t.Icon size={18} />
+            </span>
             <span className="kbd">{t.shortcut}</span>
           </button>
         ))}
@@ -53,7 +59,9 @@ export function ToolPalette({
           title="Toggle grid (G)"
           onClick={() => onGrid({ ...grid, enabled: !grid.enabled })}
         >
-          <span className="glyph">⊞</span>
+          <span className="glyph">
+            <GridIcon size={18} />
+          </span>
           <span className="kbd">G</span>
         </button>
         {grid.enabled && (
@@ -78,13 +86,17 @@ export function ToolPalette({
 
       <div className="tool-group">
         <button className="tool-btn" title="Zoom out (⌘-)" onClick={onZoomOut}>
-          <span className="glyph">−</span>
+          <span className="glyph">
+            <MinusIcon size={16} />
+          </span>
         </button>
         <button className="zoom-readout" title="Reset to 100% (⌘0)" onClick={onZoom100}>
           {Math.round(scale * 100)}%
         </button>
         <button className="tool-btn" title="Zoom in (⌘+)" onClick={onZoomIn}>
-          <span className="glyph">+</span>
+          <span className="glyph">
+            <PlusIcon size={16} />
+          </span>
         </button>
         <button className="tool-btn small" title="Fit to screen (⌘1)" onClick={onZoomFit}>
           <span className="small-label">Fit</span>
