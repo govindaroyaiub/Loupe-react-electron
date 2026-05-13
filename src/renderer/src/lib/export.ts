@@ -68,13 +68,33 @@ function blobToBytes(blob: Blob): Promise<Uint8Array> {
 export async function renderLayerToBytes(
   layer: LayerNode,
   opts: ExportOptions,
+  /**
+   * Live editable canvas with the user's in-session eraser edits applied.
+   * When provided, this is used as the source instead of the layer's
+   * original PNG bytes, so exports reflect in-app erasures.
+   */
+  editedCanvas?: HTMLCanvasElement,
 ): Promise<Uint8Array> {
-  if (!layer.image) {
-    throw new Error(`Layer "${layer.name}" has no rasterized data.`)
+  let sourceWidth: number
+  let sourceHeight: number
+  let drawSource: CanvasImageSource
+
+  if (editedCanvas) {
+    sourceWidth = editedCanvas.width
+    sourceHeight = editedCanvas.height
+    drawSource = editedCanvas
+  } else {
+    if (!layer.image) {
+      throw new Error(`Layer "${layer.name}" has no rasterized data.`)
+    }
+    const img = await loadImage(layer.image)
+    sourceWidth = img.width
+    sourceHeight = img.height
+    drawSource = img
   }
-  const img = await loadImage(layer.image)
-  const w = Math.max(1, Math.round(img.width * opts.scale))
-  const h = Math.max(1, Math.round(img.height * opts.scale))
+
+  const w = Math.max(1, Math.round(sourceWidth * opts.scale))
+  const h = Math.max(1, Math.round(sourceHeight * opts.scale))
 
   const canvas = document.createElement('canvas')
   canvas.width = w
@@ -89,7 +109,7 @@ export async function renderLayerToBytes(
     ctx.fillRect(0, 0, w, h)
   }
 
-  ctx.drawImage(img, 0, 0, w, h)
+  ctx.drawImage(drawSource, 0, 0, w, h)
 
   const mime = opts.format === 'png' ? 'image/png' : 'image/jpeg'
   const quality = opts.format === 'jpeg' ? opts.jpegQuality : undefined

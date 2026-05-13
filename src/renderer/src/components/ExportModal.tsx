@@ -8,6 +8,8 @@ interface ExportModalProps {
   layers: LayerNode[]
   baseName: string
   is2x: boolean
+  /** Live editable canvases by layer id — used so exports reflect erasures. */
+  editedCanvases: Map<string, HTMLCanvasElement>
   onClose: () => void
 }
 
@@ -18,7 +20,13 @@ interface ExportProgress {
   error?: string
 }
 
-export function ExportModal({ layers, baseName, is2x, onClose }: ExportModalProps) {
+export function ExportModal({
+  layers,
+  baseName,
+  is2x,
+  editedCanvases,
+  onClose,
+}: ExportModalProps) {
   const [format, setFormat] = useState<ExportFormat>('png')
   const [scalePreset, setScalePreset] = useState<string>(is2x ? '0.5' : '1')
   const [customScale, setCustomScale] = useState<string>('100')
@@ -82,7 +90,11 @@ export function ExportModal({ layers, baseName, is2x, onClose }: ExportModalProp
       for (let i = 0; i < plan.length; i++) {
         const item = plan[i]
         setProgress({ total: plan.length, done: i, current: item.filename })
-        const bytes = await renderLayerToBytes(item.layer, opts)
+        const bytes = await renderLayerToBytes(
+          item.layer,
+          opts,
+          editedCanvases.get(item.layer.id),
+        )
         const dest = singleDestPath ?? `${destDir}/${item.filename}`
         await window.loupe.writeFile(dest, bytes)
         if (i === 0) firstWritten = dest

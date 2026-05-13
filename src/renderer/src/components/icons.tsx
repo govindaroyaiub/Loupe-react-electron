@@ -143,3 +143,12 @@ export function ArrowRightIcon(props: IconProps): React.JSX.Element {
     </Svg>
   )
 }
+
+export function EraserIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M16.5 4.5 L20.5 8.5 L9 20 H5 v-4 Z" />
+      <path d="M11 7 L18 14" />
+    </Svg>
+  )
+}

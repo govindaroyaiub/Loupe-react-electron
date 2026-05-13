@@ -37,7 +37,7 @@ export interface OpenedDocument {
   parsed: ParsedPsd
 }
 
-export type Tool = 'select' | 'marquee' | 'hand'
+export type Tool = 'select' | 'marquee' | 'hand' | 'eraser'
 
 export interface LayerOffset {
   /** PSD-space pixel deltas applied to a layer's bounds. */

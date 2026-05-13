@@ -12,7 +12,15 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { StatusBar } from './components/StatusBar'
 import { CrosshairIcon } from './components/icons'
 import { buildSoloVisibility, collectInitialVisibility } from './lib/layers'
-import { findLayerAtAlpha, warmAlphaCache } from './lib/hit-test'
+import { findLayerAtAlpha, invalidateAlphaForLayer, warmAlphaCache } from './lib/hit-test'
+import {
+  eraseCircle,
+  eraseLineSegment,
+  eraseRect,
+  restoreCanvas,
+  snapshotCanvas,
+  warmEditableCanvases,
+} from './lib/layer-edit'
 import { flatLeafOrder, applyClick } from './lib/selection'
 import { fitView, setZoom, zoomAt, type ViewState } from './lib/view'
 import type {
@@ -31,6 +39,19 @@ import type {
 interface DocStateSnapshot {
   visibility: Record<string, boolean>
   offsets: Record<string, LayerOffset>
+  // Bumped each time a layer's editable canvas is mutated. Used to force
+  // React + Konva to re-render after in-place pixel edits.
+  bitmapVersions: Record<string, number>
+}
+
+/**
+ * One step of undo history. Most entries just hold the previous snapshot.
+ * Bitmap edits additionally carry a per-layer pixel restore point so undo
+ * can revert the in-place canvas mutation.
+ */
+interface HistoryEntry {
+  snapshot: DocStateSnapshot
+  bitmapPrev?: { layerId: string; imageData: ImageData }
 }
 
 function basenameNoExt(p: string): string {
@@ -58,13 +79,21 @@ function isTypingInField(target: EventTarget | null): boolean {
 
 function App(): React.JSX.Element {
   const [doc, setDoc] = useState<OpenedDocument | null>(null)
-  // Combined state so visibility, layer offsets, and their undo history update atomically.
+  // Combined state so visibility, layer offsets, bitmap versions, and their
+  // undo history update atomically.
   const [docState, setDocState] = useState<{
     current: DocStateSnapshot
-    history: DocStateSnapshot[]
-  }>({ current: { visibility: {}, offsets: {} }, history: [] })
+    history: HistoryEntry[]
+  }>({
+    current: { visibility: {}, offsets: {}, bitmapVersions: {} },
+    history: [],
+  })
   const visibility = docState.current.visibility
   const offsets = docState.current.offsets
+  const bitmapVersions = docState.current.bitmapVersions
+  // Live editable canvases for layers — kept outside React state because
+  // canvas mutations are tracked through bitmapVersions instead.
+  const editedCanvasesRef = useRef<Map<string, HTMLCanvasElement>>(new Map())
   const [selection, setSelection] = useState<Set<string>>(new Set())
   const [anchorId, setAnchorId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -72,6 +101,9 @@ function App(): React.JSX.Element {
   const [exportOpen, setExportOpen] = useState(false)
 
   const [tool, setTool] = useState<Tool>('select')
+  // Eraser brush diameter in PSD pixels (not CSS px). Persists across tool
+  // switches. Single value — eraser is always circular.
+  const [brushSize, setBrushSize] = useState<number>(40)
   const [spaceHeld, setSpaceHeld] = useState(false)
   const modKeyHeldRef = useRef(false)
   const [view, setView] = useState<ViewState>({ scale: 1, offsetX: 0, offsetY: 0 })
@@ -101,11 +133,15 @@ function App(): React.JSX.Element {
 
   // Pre-decode every leaf layer's image for alpha-aware hit testing as soon
   // as a doc is opened. The first click after open falls back to bbox; later
-  // clicks are pixel-accurate.
+  // clicks are pixel-accurate. Also decode an editable canvas per layer so
+  // eraser strokes have somewhere to draw without an async stall.
   useEffect(() => {
     if (!doc) return
     warmAlphaCache(doc.parsed.layers).catch(() => {
       /* decode failures fall back to bbox automatically */
+    })
+    warmEditableCanvases(doc.parsed.layers, editedCanvasesRef.current).catch(() => {
+      /* a failed decode just means erasing on that layer is a no-op */
     })
   }, [doc])
 
@@ -265,8 +301,13 @@ function App(): React.JSX.Element {
       const result = await window.loupe.pickAndParsePsd()
       if (result) {
         setDoc(result)
+        editedCanvasesRef.current = new Map()
         setDocState({
-          current: { visibility: collectInitialVisibility(result.parsed.layers), offsets: {} },
+          current: {
+            visibility: collectInitialVisibility(result.parsed.layers),
+            offsets: {},
+            bitmapVersions: {},
+          },
           history: [],
         })
         setSelection(new Set())
@@ -311,19 +352,22 @@ function App(): React.JSX.Element {
     [selection, anchorId, leafOrder],
   )
 
+  // Helper: append a new entry to history, evicting the oldest when full.
+  function pushEntry(history: HistoryEntry[], entry: HistoryEntry): HistoryEntry[] {
+    return history.length >= HISTORY_MAX
+      ? [...history.slice(1), entry]
+      : [...history, entry]
+  }
+
   // Single atomic setState: append the current snapshot to history AND swap in
   // the new visibility in one go. Avoids the nested-setState pitfall.
   const commitVisibilityChange = useCallback(
     (nextFor: (current: Record<string, boolean>) => Record<string, boolean>) => {
       setDocState((s) => {
         const snap = s.current
-        const nextHistory =
-          s.history.length >= HISTORY_MAX
-            ? [...s.history.slice(1), snap]
-            : [...s.history, snap]
         return {
           current: { ...snap, visibility: nextFor(snap.visibility) },
-          history: nextHistory,
+          history: pushEntry(s.history, { snapshot: snap }),
         }
       })
     },
@@ -331,7 +375,7 @@ function App(): React.JSX.Element {
   )
 
   // Apply an offset change without pushing history. Used for live drag updates;
-  // caller is expected to pushHistory() once at drag start.
+  // caller is expected to push a history entry once at drag start.
   const updateOffsetsLive = useCallback(
     (nextFor: (current: Record<string, LayerOffset>) => Record<string, LayerOffset>) => {
       setDocState((s) => ({
@@ -348,18 +392,49 @@ function App(): React.JSX.Element {
     (nextFor: (current: Record<string, LayerOffset>) => Record<string, LayerOffset>) => {
       setDocState((s) => {
         const snap = s.current
-        const nextHistory =
-          s.history.length >= HISTORY_MAX
-            ? [...s.history.slice(1), snap]
-            : [...s.history, snap]
         return {
           current: { ...snap, offsets: nextFor(snap.offsets) },
-          history: nextHistory,
+          history: pushEntry(s.history, { snapshot: snap }),
         }
       })
     },
     [],
   )
+
+  // Begin a bitmap edit on a layer: snapshot its current pixels so an undo can
+  // revert the upcoming mutation. The actual pixel work (eraseCircle etc.)
+  // happens directly against the canvas in editedCanvasesRef.
+  const beginBitmapEdit = useCallback((layerId: string) => {
+    const canvas = editedCanvasesRef.current.get(layerId)
+    if (!canvas) return false
+    const prev = snapshotCanvas(canvas)
+    if (!prev) return false
+    setDocState((s) => ({
+      current: s.current,
+      history: pushEntry(s.history, {
+        snapshot: s.current,
+        bitmapPrev: { layerId, imageData: prev },
+      }),
+    }))
+    return true
+  }, [])
+
+  // After a bitmap mutation, bump the version so Canvas/Konva re-render the
+  // affected layer. The pixel data lives on the canvas already; this only
+  // signals React that there's something new to paint.
+  const bumpBitmapVersion = useCallback((layerId: string) => {
+    invalidateAlphaForLayer(layerId)
+    setDocState((s) => ({
+      current: {
+        ...s.current,
+        bitmapVersions: {
+          ...s.current.bitmapVersions,
+          [layerId]: (s.current.bitmapVersions[layerId] ?? 0) + 1,
+        },
+      },
+      history: s.history,
+    }))
+  }, [])
 
   // Sync hit-test for the Select tool. Uses the alpha-aware lookup that
   // respects current visibility + per-layer offsets. Falls back to bbox for
@@ -367,10 +442,17 @@ function App(): React.JSX.Element {
   const hitTestLayer = useCallback(
     (docX: number, docY: number): string | null => {
       if (!doc) return null
-      const node = findLayerAtAlpha(doc.parsed.layers, visibility, offsets, docX, docY)
+      const node = findLayerAtAlpha(
+        doc.parsed.layers,
+        visibility,
+        offsets,
+        docX,
+        docY,
+        editedCanvasesRef.current,
+      )
       return node?.id ?? null
     },
-    [doc, visibility, offsets],
+    [doc, visibility, offsets, bitmapVersions],
   )
 
   const selectLayerById = useCallback((id: string) => {
@@ -396,11 +478,10 @@ function App(): React.JSX.Element {
       const baseline: Record<string, LayerOffset> = {}
       for (const id of ids) baseline[id] = s.current.offsets[id] ?? { x: 0, y: 0 }
       dragBaselineRef.current = { ids, baseline }
-      const nextHistory =
-        s.history.length >= HISTORY_MAX
-          ? [...s.history.slice(1), s.current]
-          : [...s.history, s.current]
-      return { current: s.current, history: nextHistory }
+      return {
+        current: s.current,
+        history: pushEntry(s.history, { snapshot: s.current }),
+      }
     })
   }, [])
 
@@ -421,6 +502,92 @@ function App(): React.JSX.Element {
   const endLayerDrag = useCallback(() => {
     dragBaselineRef.current = null
   }, [])
+
+  // Find the layer-local pixel coordinates that correspond to a document
+  // point, accounting for the layer's bounds and current offset. Returns null
+  // if there's no editable canvas for this layer (failed decode).
+  const docToLayerLocal = useCallback(
+    (
+      layerId: string,
+      docX: number,
+      docY: number,
+    ): { x: number; y: number; canvas: HTMLCanvasElement } | null => {
+      if (!doc) return null
+      const canvas = editedCanvasesRef.current.get(layerId)
+      if (!canvas) return null
+      // Find the layer's bounds in the parsed tree.
+      let bounds: { left: number; top: number; right: number; bottom: number } | null = null
+      function walk(nodes: LayerNode[]): boolean {
+        for (const n of nodes) {
+          if (n.id === layerId) {
+            bounds = n.bounds
+            return true
+          }
+          if (n.children && walk(n.children)) return true
+        }
+        return false
+      }
+      walk(doc.parsed.layers)
+      if (!bounds) return null
+      const off = offsets[layerId] ?? { x: 0, y: 0 }
+      const b: { left: number; top: number; right: number; bottom: number } = bounds
+      return {
+        x: docX - (b.left + off.x),
+        y: docY - (b.top + off.y),
+        canvas,
+      }
+    },
+    [doc, offsets],
+  )
+
+  // Push history + remember the layer's pre-stroke pixels so undo reverts the
+  // entire stroke as one action.
+  const eraseStrokeBegin = useCallback(
+    (layerId: string): boolean => beginBitmapEdit(layerId),
+    [beginBitmapEdit],
+  )
+
+  const eraseStrokeDot = useCallback(
+    (layerId: string, docX: number, docY: number, radius: number) => {
+      const local = docToLayerLocal(layerId, docX, docY)
+      if (!local) return
+      eraseCircle(local.canvas, local.x, local.y, radius)
+      bumpBitmapVersion(layerId)
+    },
+    [docToLayerLocal, bumpBitmapVersion],
+  )
+
+  const eraseStrokeSegment = useCallback(
+    (
+      layerId: string,
+      docX0: number,
+      docY0: number,
+      docX1: number,
+      docY1: number,
+      radius: number,
+    ) => {
+      const a = docToLayerLocal(layerId, docX0, docY0)
+      const b = docToLayerLocal(layerId, docX1, docY1)
+      if (!a || !b) return
+      eraseLineSegment(a.canvas, a.x, a.y, b.x, b.y, radius)
+      bumpBitmapVersion(layerId)
+    },
+    [docToLayerLocal, bumpBitmapVersion],
+  )
+
+  // Marquee+Delete: clear the marquee rect from the single selected layer.
+  // Pushes history as one undo step. No-op if the rect doesn't intersect the
+  // layer's bounds at all.
+  const eraseMarqueeFromLayer = useCallback(
+    (layerId: string, rect: MarqueeRect) => {
+      const topLeft = docToLayerLocal(layerId, rect.x, rect.y)
+      if (!topLeft) return
+      if (!beginBitmapEdit(layerId)) return
+      eraseRect(topLeft.canvas, topLeft.x, topLeft.y, rect.width, rect.height)
+      bumpBitmapVersion(layerId)
+    },
+    [docToLayerLocal, beginBitmapEdit, bumpBitmapVersion],
+  )
 
   // Manual eye toggle is also undoable — every visibility change pushes.
   const toggleVisibility = useCallback(
@@ -447,8 +614,16 @@ function App(): React.JSX.Element {
     if (docState.history.length === 0) return false
     setDocState((s) => {
       if (s.history.length === 0) return s
-      const snap = s.history[s.history.length - 1]
-      return { current: snap, history: s.history.slice(0, -1) }
+      const entry = s.history[s.history.length - 1]
+      // If this step also mutated pixels, restore the canvas now. The pixel
+      // restore happens on the live canvas in the ref; the snapshot below
+      // will roll back bitmapVersions to match.
+      if (entry.bitmapPrev) {
+        const canvas = editedCanvasesRef.current.get(entry.bitmapPrev.layerId)
+        if (canvas) restoreCanvas(canvas, entry.bitmapPrev.imageData)
+        invalidateAlphaForLayer(entry.bitmapPrev.layerId)
+      }
+      return { current: entry.snapshot, history: s.history.slice(0, -1) }
     })
     return true
   }, [docState.history.length])
@@ -589,8 +764,23 @@ function App(): React.JSX.Element {
           setTool('hand')
           return
         }
+        if (e.key === 'e' || e.key === 'E') {
+          setTool('eraser')
+          return
+        }
         if (e.key === 'g' || e.key === 'G') {
           setGrid((g) => ({ ...g, enabled: !g.enabled }))
+          return
+        }
+        // Bracket keys resize the eraser brush. Step scales with current
+        // size so the controls stay useful at any scale.
+        if (e.key === '[' || e.key === ']') {
+          e.preventDefault()
+          setBrushSize((s) => {
+            const step = Math.max(1, Math.round(s * 0.15))
+            const next = e.key === ']' ? s + step : s - step
+            return Math.min(500, Math.max(1, next))
+          })
           return
         }
         if (e.key === 'Escape') {
@@ -602,6 +792,20 @@ function App(): React.JSX.Element {
             clearSelection()
             return
           }
+        }
+        // Marquee + Delete/Backspace: clear the marquee rect from the single
+        // selected layer. No-op otherwise.
+        if (
+          (e.key === 'Delete' || e.key === 'Backspace') &&
+          marqueeFinalized &&
+          marquee &&
+          selection.size === 1
+        ) {
+          e.preventDefault()
+          const [layerId] = Array.from(selection)
+          eraseMarqueeFromLayer(layerId, marquee)
+          clearMarquee()
+          return
         }
         if (e.code === 'Space' && !spaceHeld) {
           e.preventDefault()
@@ -693,6 +897,7 @@ function App(): React.JSX.Element {
     }
   }, [
     marquee,
+    marqueeFinalized,
     selection,
     selection.size,
     spaceHeld,
@@ -707,6 +912,8 @@ function App(): React.JSX.Element {
     clearSelection,
     undoLast,
     commitOffsetChange,
+    eraseMarqueeFromLayer,
+    brushSize,
   ])
 
   const stageWidth = Math.max(0, viewport.width - RULER_THICKNESS)
@@ -731,6 +938,8 @@ function App(): React.JSX.Element {
           onTool={setTool}
           grid={grid}
           onGrid={setGrid}
+          brushSize={brushSize}
+          onBrushSize={setBrushSize}
           scale={view.scale}
           onZoomIn={zoomIn}
           onZoomOut={zoomOut}
@@ -767,6 +976,12 @@ function App(): React.JSX.Element {
                   onBeginLayerDrag={beginLayerDrag}
                   onUpdateLayerDrag={updateLayerDrag}
                   onEndLayerDrag={endLayerDrag}
+                  editedCanvases={editedCanvasesRef.current}
+                  bitmapVersions={bitmapVersions}
+                  brushSize={brushSize}
+                  onEraseStrokeBegin={eraseStrokeBegin}
+                  onEraseStrokeDot={eraseStrokeDot}
+                  onEraseStrokeSegment={eraseStrokeSegment}
                   viewportWidth={stageWidth}
                   viewportHeight={stageHeight}
                   onMousePos={setMousePos}
@@ -865,6 +1080,7 @@ function App(): React.JSX.Element {
           layers={exportLayers}
           baseName={basenameNoExt(doc.filePath)}
           is2x={is2x}
+          editedCanvases={editedCanvasesRef.current}
           onClose={() => setExportOpen(false)}
         />
       )}

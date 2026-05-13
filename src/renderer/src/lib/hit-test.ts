@@ -84,8 +84,12 @@ function sampleAlpha(
 
 /**
  * Topmost VISIBLE leaf layer whose pixel at (docX, docY) is opaque enough
- * (alpha > ALPHA_THRESHOLD). Falls back to bbox-only test for layers whose
- * image data hasn't been decoded yet (e.g. very first click after open).
+ * (alpha > ALPHA_THRESHOLD). When a layer has an entry in `editedCanvases`,
+ * its live pixels are sampled instead of the cached original — so eraser
+ * edits are immediately reflected in hit-test results.
+ *
+ * Falls back to bbox-only test for layers whose image data hasn't been
+ * decoded yet (e.g. very first click after open).
  */
 export function findLayerAtAlpha(
   layers: LayerNode[],
@@ -93,6 +97,7 @@ export function findLayerAtAlpha(
   offsets: Record<string, LayerOffset>,
   docX: number,
   docY: number,
+  editedCanvases?: Map<string, HTMLCanvasElement>,
 ): LayerNode | null {
   const leaves = flattenLeaves(layers, visibility)
   for (let i = leaves.length - 1; i >= 0; i--) {
@@ -109,6 +114,26 @@ export function findLayerAtAlpha(
     if (w <= 0 || h <= 0) continue
     if (docX < left || docX >= right || docY < top || docY >= bottom) continue
 
+    const localX = Math.floor(docX - left)
+    const localY = Math.floor(docY - top)
+
+    // Prefer the live editable canvas if one exists for this layer — it has
+    // the current pixel state including any eraser edits.
+    const editedCanvas = editedCanvases?.get(leaf.id)
+    if (editedCanvas) {
+      const ctx = editedCanvas.getContext('2d', { willReadFrequently: true })
+      if (ctx) {
+        try {
+          const px = ctx.getImageData(localX, localY, 1, 1).data
+          if (px[3] > ALPHA_THRESHOLD) return leaf.node
+        } catch {
+          // Cross-origin or oversized read can throw — fall through to other
+          // sampling paths.
+        }
+      }
+      continue
+    }
+
     if (!leaf.node.image) {
       // No raster — treat the bbox as the hit (e.g. text-only layers might
       // arrive without an image in pathological cases).
@@ -121,11 +146,20 @@ export function findLayerAtAlpha(
       decodeAlpha(leaf.node.image)
       return leaf.node
     }
-    const localX = Math.floor(docX - left)
-    const localY = Math.floor(docY - top)
     const a = sampleAlpha(sampler, localX, localY)
     if (a > ALPHA_THRESHOLD) return leaf.node
     // Otherwise, transparent pixel here — keep searching below.
   }
   return null
+}
+
+/**
+ * Drop the cached alpha sampler for a layer so a subsequent hit-test
+ * re-samples it. Currently a no-op for layers using the live edited canvas
+ * path (which always samples fresh), but kept for symmetry with byte-keyed
+ * lookups. Exported so App can call it after a bitmap mutation.
+ */
+export function invalidateAlphaForLayer(_layerId: string): void {
+  // No-op today: edited canvases bypass the byte-keyed sampler entirely.
+  // Reserved for future cases where we want to repopulate the sampler.
 }

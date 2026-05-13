@@ -1,12 +1,22 @@
 import type { ComponentType, SVGProps } from 'react'
 import type { GridConfig, Tool } from '../types'
-import { GridIcon, HandIcon, MarqueeIcon, MinusIcon, PlusIcon, SelectIcon } from './icons'
+import {
+  EraserIcon,
+  GridIcon,
+  HandIcon,
+  MarqueeIcon,
+  MinusIcon,
+  PlusIcon,
+  SelectIcon,
+} from './icons'
 
 interface ToolPaletteProps {
   tool: Tool
   onTool: (t: Tool) => void
   grid: GridConfig
   onGrid: (g: GridConfig) => void
+  brushSize: number
+  onBrushSize: (n: number) => void
   scale: number
   onZoomIn: () => void
   onZoomOut: () => void
@@ -19,6 +29,7 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>
 const TOOLS: { id: Tool; label: string; shortcut: string; Icon: IconComponent }[] = [
   { id: 'select', label: 'Select', shortcut: 'V', Icon: SelectIcon },
   { id: 'marquee', label: 'Marquee', shortcut: 'M', Icon: MarqueeIcon },
+  { id: 'eraser', label: 'Eraser', shortcut: 'E', Icon: EraserIcon },
   { id: 'hand', label: 'Hand (Space)', shortcut: 'H', Icon: HandIcon },
 ]
 
@@ -27,6 +38,8 @@ export function ToolPalette({
   onTool,
   grid,
   onGrid,
+  brushSize,
+  onBrushSize,
   scale,
   onZoomIn,
   onZoomOut,
@@ -50,6 +63,33 @@ export function ToolPalette({
           </button>
         ))}
       </div>
+
+      {tool === 'eraser' && (
+        <div className="brush-size" title="Eraser size (PSD px) · [ / ] to resize">
+          <input
+            className="brush-slider"
+            type="range"
+            min={1}
+            max={500}
+            step={1}
+            value={brushSize}
+            onChange={(e) => onBrushSize(Number(e.target.value))}
+            aria-label="Eraser size"
+          />
+          <input
+            className="brush-number"
+            type="number"
+            min={1}
+            max={500}
+            step={1}
+            value={brushSize}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              if (Number.isFinite(v) && v > 0) onBrushSize(Math.min(500, Math.max(1, v)))
+            }}
+          />
+        </div>
+      )}
 
       <div className="tool-divider" />
 

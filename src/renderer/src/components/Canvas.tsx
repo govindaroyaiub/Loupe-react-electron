@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Stage, Layer, Image as KonvaImage, Rect, Line } from 'react-konva'
+import { Stage, Layer, Image as KonvaImage, Rect, Line, Circle } from 'react-konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
+import type Konva from 'konva'
+
+type KonvaImageType = Konva.Image
 import type {
   DraggingGuide,
   GridConfig,
@@ -45,6 +48,25 @@ interface CanvasProps {
   /** Live drag update: apply (dx, dy) PSD-px delta to the drag baseline. */
   onUpdateLayerDrag: (dx: number, dy: number) => void
   onEndLayerDrag: () => void
+  /** Per-layer editable canvases (live, mutable). */
+  editedCanvases: Map<string, HTMLCanvasElement>
+  /** Per-layer version counter — bumped after each bitmap mutation. */
+  bitmapVersions: Record<string, number>
+  /** Eraser brush diameter (PSD pixels). */
+  brushSize: number
+  /** Push history snapshot + record the layer's pre-stroke pixels. */
+  onEraseStrokeBegin: (layerId: string) => boolean
+  /** Erase a single circular dot at a document-space point. */
+  onEraseStrokeDot: (layerId: string, docX: number, docY: number, radius: number) => void
+  /** Erase along a line segment between two document-space points. */
+  onEraseStrokeSegment: (
+    layerId: string,
+    docX0: number,
+    docY0: number,
+    docX1: number,
+    docY1: number,
+    radius: number,
+  ) => void
   viewportWidth: number
   viewportHeight: number
   onMousePos: (pos: { x: number; y: number } | null) => void
@@ -73,18 +95,34 @@ function useImageFromBytes(bytes: Uint8Array | undefined): HTMLImageElement | nu
 
 function LeafLayer({
   bytes,
+  canvas,
   x,
   y,
   visible,
+  version,
 }: {
   bytes: Uint8Array
+  canvas: HTMLCanvasElement | undefined
   x: number
   y: number
   visible: boolean
+  /** Bumped after each in-place mutation of `canvas` so Konva redraws. */
+  version: number
 }) {
-  const img = useImageFromBytes(bytes)
-  if (!img || !visible) return null
-  return <KonvaImage image={img} x={x} y={y} listening={false} />
+  // Decode the original PNG only as a fallback while editable-canvas warm-up
+  // is in flight. After warm-up every layer has a canvas and we never use
+  // the decoded image.
+  const decoded = useImageFromBytes(bytes)
+  const ref = useRef<KonvaImageType | null>(null)
+  useEffect(() => {
+    // After any pixel mutation, ask the Konva layer to redraw. The image
+    // prop reference may not have changed (canvas is mutated in place), so
+    // we trigger it explicitly here.
+    ref.current?.getLayer()?.batchDraw()
+  }, [version])
+  const image = canvas ?? decoded
+  if (!image || !visible) return null
+  return <KonvaImage ref={ref} image={image} x={x} y={y} listening={false} />
 }
 
 function buildGridLines(
@@ -126,6 +164,12 @@ export function Canvas({
   onBeginLayerDrag,
   onUpdateLayerDrag,
   onEndLayerDrag,
+  editedCanvases,
+  bitmapVersions,
+  brushSize,
+  onEraseStrokeBegin,
+  onEraseStrokeDot,
+  onEraseStrokeSegment,
   viewportWidth,
   viewportHeight,
   onMousePos,
@@ -148,8 +192,17 @@ export function Canvas({
         ids: string[]
         started: boolean
       }
+    | {
+        kind: 'erase-stroke'
+        layerId: string
+        prevDocX: number
+        prevDocY: number
+      }
     | null
   >(null)
+
+  // Cursor position in document coords — used to draw the eraser brush preview.
+  const [cursorDoc, setCursorDoc] = useState<{ x: number; y: number } | null>(null)
 
   const leaves = useMemo(() => flattenLeaves(doc.layers, visibility), [doc.layers, visibility])
 
@@ -266,6 +319,23 @@ export function Canvas({
       return
     }
 
+    if (effectiveTool === 'eraser') {
+      // Erase on the single selected layer. If 0 or >1 layers are selected
+      // we silently do nothing — same behavior as Photoshop's eraser.
+      if (selection.size !== 1) return
+      const layerId = Array.from(selection)[0]
+      const docPos = screenToDoc(view, pointer.x, pointer.y)
+      if (!onEraseStrokeBegin(layerId)) return
+      onEraseStrokeDot(layerId, docPos.x, docPos.y, brushSize / 2)
+      dragStateRef.current = {
+        kind: 'erase-stroke',
+        layerId,
+        prevDocX: docPos.x,
+        prevDocY: docPos.y,
+      }
+      return
+    }
+
     if (effectiveTool === 'hand') {
       dragStateRef.current = {
         kind: 'pan',
@@ -302,6 +372,11 @@ export function Canvas({
     }
     const docPos = screenToDoc(view, pointer.x, pointer.y)
     onMousePos(docPos)
+    if (effectiveTool === 'eraser') {
+      setCursorDoc(docPos)
+    } else if (cursorDoc) {
+      setCursorDoc(null)
+    }
 
     // Update hover-near-guide cursor when not dragging.
     if (!dragStateRef.current) {
@@ -326,6 +401,20 @@ export function Canvas({
 
     const drag = dragStateRef.current
     if (!drag) return
+
+    if (drag.kind === 'erase-stroke') {
+      onEraseStrokeSegment(
+        drag.layerId,
+        drag.prevDocX,
+        drag.prevDocY,
+        docPos.x,
+        docPos.y,
+        brushSize / 2,
+      )
+      drag.prevDocX = docPos.x
+      drag.prevDocY = docPos.y
+      return
+    }
 
     if (drag.kind === 'move-layers') {
       const dxScreen = pointer.x - drag.startScreenX
@@ -371,6 +460,10 @@ export function Canvas({
     const drag = dragStateRef.current
     dragStateRef.current = null
     if (!drag) return
+    if (drag.kind === 'erase-stroke') {
+      // Stroke is committed pixel-by-pixel; nothing to do on release.
+      return
+    }
     if (drag.kind === 'move-layers') {
       if (drag.started) onEndLayerDrag()
       return
@@ -395,6 +488,7 @@ export function Canvas({
 
   function handleMouseLeave() {
     onMousePos(null)
+    setCursorDoc(null)
   }
 
   const [hoverGuide, setHoverGuide] = useState<'vertical' | 'horizontal' | null>(null)
@@ -471,9 +565,11 @@ export function Canvas({
             <LeafLayer
               key={leaf.id}
               bytes={leaf.node.image}
+              canvas={editedCanvases.get(leaf.id)}
               x={leaf.node.bounds.left + off.x}
               y={leaf.node.bounds.top + off.y}
               visible={leaf.effectiveVisible}
+              version={bitmapVersions[leaf.id] ?? 0}
             />
           )
         })}
@@ -579,6 +675,30 @@ export function Canvas({
                 opacity={draggingGuide.overRuler ? 0.7 : 1}
               />
             ))}
+        </Layer>
+      )}
+      {effectiveTool === 'eraser' && cursorDoc && (
+        <Layer listening={false}>
+          <Circle
+            x={cursorDoc.x}
+            y={cursorDoc.y}
+            radius={brushSize / 2}
+            stroke={selection.size === 1 ? '#ffffff' : '#ff6b6b'}
+            strokeWidth={1.5 / view.scale}
+            shadowColor="rgba(0,0,0,0.6)"
+            shadowBlur={2 / view.scale}
+            shadowEnabled
+            listening={false}
+          />
+          <Circle
+            x={cursorDoc.x}
+            y={cursorDoc.y}
+            radius={brushSize / 2}
+            stroke="rgba(0,0,0,0.65)"
+            strokeWidth={1 / view.scale}
+            dash={[3 / view.scale, 3 / view.scale]}
+            listening={false}
+          />
         </Layer>
       )}
     </Stage>
