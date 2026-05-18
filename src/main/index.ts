@@ -4,7 +4,7 @@ import { promises as fsp } from 'node:fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import icon from '../../resources/icon.png?asset'
-import { parsePsdFile } from './psd'
+import { isImageExt, parseImageFile, parsePsdFile } from './psd'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -59,14 +59,18 @@ function createWindow(): void {
   }
 }
 
-async function openPsdDialog(): Promise<string | null> {
+async function openFilesDialog(): Promise<string[]> {
   const result = await dialog.showOpenDialog({
-    title: 'Open PSD',
-    properties: ['openFile'],
-    filters: [{ name: 'Photoshop', extensions: ['psd'] }],
+    title: 'Open files',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'PSD or image', extensions: ['psd', 'png', 'jpg', 'jpeg'] },
+      { name: 'Photoshop', extensions: ['psd'] },
+      { name: 'Image', extensions: ['png', 'jpg', 'jpeg'] },
+    ],
   })
-  if (result.canceled || result.filePaths.length === 0) return null
-  return result.filePaths[0]
+  if (result.canceled) return []
+  return result.filePaths
 }
 
 function triggerOpenFromMenu(): void {
@@ -133,7 +137,7 @@ function buildMenu(): void {
       label: 'File',
       submenu: [
         {
-          label: 'Open PSD…',
+          label: 'Open File…',
           accelerator: 'CmdOrCtrl+O',
           click: triggerOpenFromMenu,
         },
@@ -151,8 +155,13 @@ function buildMenu(): void {
         { type: 'separator' },
         { role: 'reload' },
         { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
+        // On macOS the system auto-injects "Enter Full Screen" into any
+        // menu labeled "View" — adding our own role here would produce a
+        // duplicate. On Windows/Linux there is no such injection, so we
+        // provide it explicitly there.
+        ...(isMac
+          ? []
+          : ([{ type: 'separator' }, { role: 'togglefullscreen' }] as MenuItemConstructorOptions[])),
       ],
     },
   ]
@@ -162,19 +171,40 @@ function buildMenu(): void {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.loupe.app')
 
+  // macOS dev: the packaged .icns isn't present, so the dock falls back to the
+  // generic Electron icon. Force the bundled PNG so dev matches production.
+  if (process.platform === 'darwin') {
+    app.dock?.setIcon(icon)
+  }
+
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
   ipcMain.handle('psd:pick-and-parse', async () => {
-    const filePath = await openPsdDialog()
-    if (!filePath) return null
-    const parsed = parsePsdFile(filePath)
-    return { filePath, parsed }
+    const filePaths = await openFilesDialog()
+    if (filePaths.length === 0) return []
+    // Parse in parallel where possible. ag-psd's readPsd is synchronous so
+    // PSDs still serialize on the main thread; image parses (PNG/JPG) run
+    // concurrently via the napi-rs decoder. One bad file doesn't kill the
+    // batch — it's just dropped from the result.
+    const settled = await Promise.allSettled(
+      filePaths.map(async (fp) => {
+        const parsed = isImageExt(fp) ? await parseImageFile(fp) : parsePsdFile(fp)
+        return { filePath: fp, parsed }
+      }),
+    )
+    const out: Array<{ filePath: string; parsed: ReturnType<typeof parsePsdFile> }> = []
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i]
+      if (r.status === 'fulfilled') out.push(r.value)
+      else console.error('[open]', filePaths[i], r.reason)
+    }
+    return out
   })
 
   ipcMain.handle('psd:parse', async (_event, filePath: string) => {
-    return parsePsdFile(filePath)
+    return isImageExt(filePath) ? await parseImageFile(filePath) : parsePsdFile(filePath)
   })
 
   ipcMain.handle(

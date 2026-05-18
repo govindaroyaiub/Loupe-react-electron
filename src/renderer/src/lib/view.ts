@@ -52,14 +52,24 @@ export function setZoom(
   return zoomAt(view, screenX, screenY, clampScale(newScale) / view.scale)
 }
 
+/**
+ * Convert a screen-space point (in CSS pixels, relative to the stage
+ * container) to an absolute document coordinate. When a crop is active, the
+ * Konva Stage is translated by `-(cropOffsetX, cropOffsetY) * scale` so the
+ * crop origin lines up with `view.offset`. To keep this function's output in
+ * absolute doc-coords regardless, callers pass `displayBounds.{x,y}` (which
+ * is `cropRect.{x,y}` when cropped, or `(0,0)` when not).
+ */
 export function screenToDoc(
   view: ViewState,
   screenX: number,
   screenY: number,
+  cropOffsetX = 0,
+  cropOffsetY = 0,
 ): { x: number; y: number } {
   return {
-    x: (screenX - view.offsetX) / view.scale,
-    y: (screenY - view.offsetY) / view.scale,
+    x: (screenX - view.offsetX) / view.scale + cropOffsetX,
+    y: (screenY - view.offsetY) / view.scale + cropOffsetY,
   }
 }
 

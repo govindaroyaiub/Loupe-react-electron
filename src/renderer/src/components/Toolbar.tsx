@@ -1,12 +1,18 @@
-import type { OpenedDocument } from '../types'
+import type { CropRect, OpenedDocument } from '../types'
+import { CloseIcon, HelpIcon } from './icons'
 
 interface ToolbarProps {
   doc: OpenedDocument | null
   busy: boolean
-  selectionCount: number
-  totalLeafCount: number
   onOpen: () => void
-  onExport: () => void
+  /** Open the Save canvas dialog. */
+  onOpenSave: () => void
+  /** Active document crop, or null when no crop is applied. */
+  cropRect: CropRect | null
+  /** Clear the crop and restore the full document view. */
+  onResetCrop: () => void
+  /** Open the keyboard shortcuts modal. */
+  onOpenShortcuts: () => void
 }
 
 function basename(p: string): string {
@@ -16,18 +22,17 @@ function basename(p: string): string {
 export function Toolbar({
   doc,
   busy,
-  selectionCount,
-  totalLeafCount,
   onOpen,
-  onExport,
+  onOpenSave,
+  cropRect,
+  onResetCrop,
+  onOpenShortcuts,
 }: ToolbarProps) {
   const w = doc?.parsed.width
   const h = doc?.parsed.height
   const isEvenSize = w !== undefined && h !== undefined && w % 2 === 0 && h % 2 === 0
   const at1x = isEvenSize ? `${w! / 2} × ${h! / 2}` : null
-
-  const exportLabel =
-    selectionCount > 0 ? `Export ${selectionCount}` : `Export all (${totalLeafCount})`
+  const totalLeafCount = doc?.parsed.totalLeafCount ?? 0
 
   return (
     <header className="toolbar">
@@ -41,27 +46,64 @@ export function Toolbar({
             <span className="filename">{basename(doc.filePath)}</span>
             <span className="sep">•</span>
             <span className="dims">
-              {w} × {h} px
-              {at1x && (
+              {cropRect ? (
                 <>
-                  <span className="muted"> @2x · </span>
-                  <span className="muted">@1x {at1x}</span>
+                  {cropRect.w} × {cropRect.h} px
+                  <span className="muted">  (of full {w} × {h})</span>
+                </>
+              ) : (
+                <>
+                  {w} × {h} px
+                  {at1x && (
+                    <>
+                      <span className="muted"> @2x · </span>
+                      <span className="muted">@1x {at1x}</span>
+                    </>
+                  )}
                 </>
               )}
             </span>
             <span className="sep">•</span>
             <span className="muted">{totalLeafCount} layers</span>
+            {cropRect && (
+              <button
+                className="crop-pill"
+                onClick={onResetCrop}
+                title="Reset crop"
+                type="button"
+              >
+                <span className="crop-pill-label">
+                  Cropped {cropRect.w} × {cropRect.h}
+                </span>
+                <span className="crop-pill-x" aria-hidden>
+                  <CloseIcon size={13} />
+                </span>
+              </button>
+            )}
           </>
         ) : (
           <span className="muted">No file open</span>
         )}
       </div>
       <div className="actions">
-        <button className="btn" onClick={onOpen} disabled={busy}>
-          {busy ? 'Opening…' : 'Open PSD'}
+        <button
+          className="icon-btn toolbar-help"
+          onClick={onOpenShortcuts}
+          title="Keyboard shortcuts (⌘/)"
+          aria-label="Keyboard shortcuts"
+        >
+          <HelpIcon size={16} />
         </button>
-        <button className="btn primary" onClick={onExport} disabled={!doc || busy}>
-          {exportLabel}
+        <button className="btn" onClick={onOpen} disabled={busy} title="Open a file (⌘O)">
+          {busy ? 'Opening…' : 'Open'}
+        </button>
+        <button
+          className="btn primary"
+          onClick={onOpenSave}
+          disabled={!doc || busy}
+          title="Save canvas (⌘S)"
+        >
+          Save
         </button>
       </div>
     </header>

@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Rule } from '../types'
+import type { DisplayBounds, Rule } from '../types'
 import { CloseIcon } from './icons'
 
 interface RulesPanelProps {
   rules: Rule[]
-  docWidth: number
-  docHeight: number
+  /**
+   * Visible doc bounds. Rules are stored in absolute doc coords; this is
+   * used to translate them for display and to dim rules outside the crop.
+   */
+  displayBounds: DisplayBounds
   is2x: boolean
   focusRuleId: string | null
   onRename: (id: string, name: string) => void
@@ -20,6 +23,7 @@ function round(n: number, digits = 1): number {
 
 interface RuleRowProps {
   rule: Rule
+  displayBounds: DisplayBounds
   is2x: boolean
   autoFocus: boolean
   onRename: (id: string, name: string) => void
@@ -27,31 +31,64 @@ interface RuleRowProps {
   onAutoFocused: () => void
 }
 
-function summary(rule: Rule, is2x: boolean): string {
+function isOutsideCrop(rule: Rule, db: DisplayBounds): boolean {
+  if (rule.kind === 'marquee' && rule.rect) {
+    const r = rule.rect
+    return (
+      r.x + r.width <= db.x ||
+      r.x >= db.x + db.w ||
+      r.y + r.height <= db.y ||
+      r.y >= db.y + db.h
+    )
+  }
+  if (rule.kind === 'guide-intersection' && rule.point) {
+    const p = rule.point
+    return p.x < db.x || p.x > db.x + db.w || p.y < db.y || p.y > db.y + db.h
+  }
+  return false
+}
+
+function summary(rule: Rule, is2x: boolean, db: DisplayBounds): string {
   const s = is2x ? 0.5 : 1
   if (rule.kind === 'marquee' && rule.rect) {
     const r = rule.rect
-    return `${round(r.width * s)} × ${round(r.height * s)} @ (${round(r.x * s)}, ${round(r.y * s)})`
+    const lx = r.x - db.x
+    const ly = r.y - db.y
+    return `${round(r.width * s)} × ${round(r.height * s)} @ (${round(lx * s)}, ${round(ly * s)})`
   }
   if (rule.kind === 'guide-intersection' && rule.point) {
-    return `(${round(rule.point.x * s)}, ${round(rule.point.y * s)})`
+    const lx = rule.point.x - db.x
+    const ly = rule.point.y - db.y
+    return `(${round(lx * s)}, ${round(ly * s)})`
   }
   return ''
 }
 
-function copyText(rule: Rule, is2x: boolean): string {
+function copyText(rule: Rule, is2x: boolean, db: DisplayBounds): string {
   const s = is2x ? 0.5 : 1
   if (rule.kind === 'marquee' && rule.rect) {
     const r = rule.rect
-    return `left: ${round(r.x * s)}px;\ntop: ${round(r.y * s)}px;\nwidth: ${round(r.width * s)}px;\nheight: ${round(r.height * s)}px;`
+    const lx = r.x - db.x
+    const ly = r.y - db.y
+    return `left: ${round(lx * s)}px;\ntop: ${round(ly * s)}px;\nwidth: ${round(r.width * s)}px;\nheight: ${round(r.height * s)}px;`
   }
   if (rule.kind === 'guide-intersection' && rule.point) {
-    return `transform-origin: ${round(rule.point.x * s)}px ${round(rule.point.y * s)}px;`
+    const lx = rule.point.x - db.x
+    const ly = rule.point.y - db.y
+    return `transform-origin: ${round(lx * s)}px ${round(ly * s)}px;`
   }
   return ''
 }
 
-function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: RuleRowProps) {
+function RuleRow({
+  rule,
+  displayBounds,
+  is2x,
+  autoFocus,
+  onRename,
+  onDelete,
+  onAutoFocused,
+}: RuleRowProps) {
   const [editing, setEditing] = useState(autoFocus)
   const [draft, setDraft] = useState(rule.name)
   const [copied, setCopied] = useState(false)
@@ -70,9 +107,12 @@ function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: R
     setEditing(false)
   }
 
+  const outside = isOutsideCrop(rule, displayBounds)
+
   async function doCopy() {
+    if (outside) return
     try {
-      await navigator.clipboard.writeText(copyText(rule, is2x))
+      await navigator.clipboard.writeText(copyText(rule, is2x, displayBounds))
       setCopied(true)
       setTimeout(() => setCopied(false), 1200)
     } catch {
@@ -83,7 +123,7 @@ function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: R
   const displayName = rule.name.trim() || 'Untitled'
 
   return (
-    <div className="rule-row">
+    <div className={`rule-row${outside ? ' outside-crop' : ''}`}>
       <div className="rule-head">
         {editing ? (
           <input
@@ -118,8 +158,11 @@ function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: R
           <CloseIcon size={14} />
         </button>
       </div>
-      <div className="rule-summary">{summary(rule, is2x)}</div>
-      <button className="rule-copy" onClick={doCopy}>
+      <div className="rule-summary">
+        {summary(rule, is2x, displayBounds)}
+        {outside && <span className="rule-outside-tag"> · outside crop</span>}
+      </div>
+      <button className="rule-copy" onClick={doCopy} disabled={outside}>
         {copied ? 'Copied' : 'Copy CSS'}
       </button>
     </div>
@@ -128,6 +171,7 @@ function RuleRow({ rule, is2x, autoFocus, onRename, onDelete, onAutoFocused }: R
 
 export function RulesPanel({
   rules,
+  displayBounds,
   is2x,
   focusRuleId,
   onRename,
@@ -140,17 +184,25 @@ export function RulesPanel({
         <span>Rules ({rules.length})</span>
       </div>
       <div className="rules-scroll">
-        {rules.map((rule) => (
-          <RuleRow
-            key={rule.id}
-            rule={rule}
-            is2x={is2x}
-            autoFocus={rule.id === focusRuleId}
-            onRename={onRename}
-            onDelete={onDelete}
-            onAutoFocused={onFocused}
-          />
-        ))}
+        {rules.length === 0 ? (
+          <div className="rules-empty">
+            Drag two guides from the rulers, then click <strong>+ Rule</strong> on
+            the guides panel to save a measurement here.
+          </div>
+        ) : (
+          rules.map((rule) => (
+            <RuleRow
+              key={rule.id}
+              rule={rule}
+              displayBounds={displayBounds}
+              is2x={is2x}
+              autoFocus={rule.id === focusRuleId}
+              onRename={onRename}
+              onDelete={onDelete}
+              onAutoFocused={onFocused}
+            />
+          ))
+        )}
       </div>
     </div>
   )

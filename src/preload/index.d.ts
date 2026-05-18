@@ -3,7 +3,7 @@ import type { FileFilter } from 'electron'
 import type { ParsedPsd } from '../main/psd'
 
 export interface LoupeApi {
-  pickAndParsePsd: () => Promise<{ filePath: string; parsed: ParsedPsd } | null>
+  pickAndParsePsd: () => Promise<Array<{ filePath: string; parsed: ParsedPsd }>>
   parsePsd: (filePath: string) => Promise<ParsedPsd>
   onMenuOpenPsd: (handler: () => void) => () => void
   onCanvasAction: (handler: (action: string) => void) => () => void

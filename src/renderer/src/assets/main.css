@@ -9,14 +9,15 @@
   --border-strong: #44444c;
   --text: rgba(255, 255, 245, 0.92);
   --text-dim: rgba(235, 235, 245, 0.55);
-  --text-faint: rgba(235, 235, 245, 0.32);
+  /* Was 0.32 — failed WCAG AA against --bg. Bumped to 0.42 (~4.5:1). */
+  --text-faint: rgba(235, 235, 245, 0.42);
   --accent: #4aa3ff;
   --accent-soft: rgba(74, 163, 255, 0.18);
   --warn-bg: rgba(255, 184, 0, 0.12);
   --warn-text: #ffc960;
   --err-bg: rgba(255, 90, 90, 0.16);
   --err-text: #ff9b9b;
-  --row-hover: rgba(255, 255, 255, 0.04);
+  --row-hover: rgba(255, 255, 255, 0.06);
   --row-selected: rgba(74, 163, 255, 0.16);
 }
 
@@ -33,6 +34,9 @@ body {
   color: var(--text);
   user-select: none;
   -webkit-user-select: none;
+  /* All numeric readouts (rulers, status bar, dims, snippets) want
+     tabular alignment; set it once instead of per-component. */
+  font-variant-numeric: tabular-nums;
 }
 
 button {
@@ -41,6 +45,15 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+}
+
+/* Keyboard-only focus ring. Mouse clicks don't trigger it (because of
+   :focus-visible), keyboard navigation does. Visible accent outline so
+   users can see which control has focus. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
 }
 
 .app {
@@ -101,7 +114,7 @@ button {
 }
 
 .toolbar .doc-info .sep {
-  color: var(--text-faint);
+  color: var(--text-dim);
 }
 
 .toolbar .doc-info .muted {
@@ -111,6 +124,40 @@ button {
 .toolbar .actions {
   display: flex;
   gap: 8px;
+}
+
+/* "Cropped W×H ✕" pill — appears in the toolbar's doc-info while a crop is
+   active. The whole pill is the reset button. */
+.toolbar .crop-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  border-radius: 11px;
+  background: rgba(255, 216, 74, 0.16);
+  color: #ffd84a;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid rgba(255, 216, 74, 0.28);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.toolbar .crop-pill:hover {
+  background: rgba(255, 216, 74, 0.28);
+}
+
+.toolbar .crop-pill .crop-pill-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.18);
+  color: #ffd84a;
 }
 
 .btn {
@@ -271,7 +318,7 @@ button {
 }
 
 .sidebar {
-  width: 300px;
+  width: 330px;
   background: var(--bg-panel);
   border-left: 1px solid var(--border);
   display: flex;
@@ -292,6 +339,25 @@ button {
   letter-spacing: 0.08em;
   color: var(--text-dim);
   border-bottom: 1px solid var(--border);
+}
+
+.layers-hint {
+  padding: 6px 12px 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.layers-hint kbd {
+  display: inline-block;
+  padding: 0 4px;
+  font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
 }
 
 .layers-scroll {
@@ -319,14 +385,14 @@ button {
 }
 
 .layer-row .eye {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 4px;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: 14px;
 }
 
 .layer-row .eye:hover {
@@ -389,14 +455,14 @@ button {
 }
 
 .layer-row .group-chevron-right {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: 4px;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: 14px;
   margin-left: 2px;
   flex-shrink: 0;
 }
@@ -434,7 +500,7 @@ button {
   align-items: center;
   height: 16px;
   padding: 0 5px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--text-dim);
@@ -455,13 +521,17 @@ button {
 
 .link-btn {
   font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
   color: var(--accent);
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: 4px;
+  background: var(--accent-soft);
 }
 
 .link-btn:hover {
-  background: var(--accent-soft);
+  background: rgba(74, 163, 255, 0.28);
 }
 
 /* Modal */
@@ -653,12 +723,23 @@ button {
 }
 
 .preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-dim);
   border-bottom: 1px solid var(--border);
+}
+
+.preview-crop-note {
+  text-transform: none;
+  letter-spacing: 0;
+  color: #ffd84a;
+  font-weight: 600;
 }
 
 .preview-list {
@@ -953,7 +1034,7 @@ button {
 .mp-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
@@ -964,6 +1045,21 @@ button {
   letter-spacing: 0.06em;
   color: var(--text-dim);
   flex: 1;
+}
+
+.mp-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mp-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .seg.small {
@@ -988,52 +1084,58 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
-.mp-snippets {
+/* Single-snippet block (with picker dropdown). */
+.mp-snippet {
   padding: 8px 10px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
-.snippet {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.snippet-head {
+.mp-snippet-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 5px 8px;
-  background: rgba(255, 255, 255, 0.02);
+  gap: 6px;
 }
 
-.snippet-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-dim);
+.mp-snippet-picker {
+  flex: 1;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mp-snippet-picker:hover {
+  border-color: var(--border-strong);
 }
 
 .snippet-copy {
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--accent);
-  padding: 2px 6px;
-  border-radius: 3px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  background: var(--accent-soft);
 }
 
 .snippet-copy:hover {
-  background: var(--accent-soft);
+  background: rgba(74, 163, 255, 0.25);
 }
 
 .snippet-text {
   margin: 0;
-  padding: 6px 10px 8px;
+  padding: 8px 10px;
   font-family: 'SF Mono', 'Monaco', 'Cascadia Code', Consolas, monospace;
   font-size: 11px;
   color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   white-space: pre;
   overflow-x: auto;
 }
@@ -1133,6 +1235,54 @@ button {
   background: rgba(74, 163, 255, 0.25);
 }
 
+/* Disabled close/icon-btn buttons. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Apply-as-Crop button in MarqueePanel — same shape as save-rule-btn, warmer
+   accent so the two actions read distinctly when they coexist. */
+.apply-crop-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: rgba(255, 216, 74, 0.16);
+  color: #ffd84a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.apply-crop-btn:hover {
+  background: rgba(255, 216, 74, 0.28);
+}
+
+/* Take out (erase marquee region from selected layer). Red-tinted to
+   signal it's destructive. */
+.apply-take-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: rgba(255, 107, 107, 0.14);
+  color: #ff8a8a;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.apply-take-btn:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.26);
+}
+
+.apply-take-btn:disabled {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
 /* Rules panel (right sidebar, above Layers) */
 .rules-panel {
   display: flex;
@@ -1140,6 +1290,18 @@ button {
   border-bottom: 1px solid var(--border);
   max-height: 40%;
   min-height: 0;
+}
+
+.rules-empty {
+  padding: 14px 14px 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.rules-empty strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .rules-scroll {
@@ -1220,6 +1382,24 @@ button {
   background: var(--accent-soft);
 }
 
+.rule-copy:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  background: transparent;
+}
+
+/* Rule rows whose rect/point falls fully outside the active crop. The data
+   is preserved so a Reset restores normal styling; here we just signal it's
+   currently inactionable. */
+.rule-row.outside-crop {
+  opacity: 0.5;
+}
+
+.rule-outside-tag {
+  color: #ffd84a;
+  margin-left: 2px;
+}
+
 /* Status bar */
 .status-bar {
   height: 24px;
@@ -1243,6 +1423,368 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+/* Pre-reserve width so the row doesn't shift when the cursor enters/leaves
+   the canvas (toggle between "—" and the coord pair). */
+.status-mouse {
+  min-width: 280px;
+}
+
 .status-sep {
   color: var(--text-faint);
+}
+
+/* Right-click context menu — small floating panel, anchored to cursor by
+   inline left/top from ContextMenu.tsx. */
+.context-menu {
+  position: fixed;
+  z-index: 200;
+  background: #1e1e22;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.context-menu-item:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* Keyboard-shortcuts cheat sheet */
+.shortcuts-modal {
+  width: min(620px, calc(100vw - 80px));
+}
+
+.shortcuts-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 28px;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.shortcuts-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shortcuts-section-title {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.shortcuts-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.shortcuts-list dt {
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+
+.shortcuts-list dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+  align-self: center;
+}
+
+.shortcuts-list kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* Help icon in the toolbar — neutral when idle, dims on hover. */
+.toolbar-help {
+  margin-right: 2px;
+  color: var(--text-dim);
+}
+
+/* Save canvas dialog — full composite preview + format / size pickers. */
+.save-as-modal {
+  width: min(560px, calc(100vw - 80px));
+}
+
+.save-as-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-color: rgba(0, 0, 0, 0.2);
+  max-height: 280px;
+  min-height: 120px;
+  overflow: hidden;
+}
+
+.save-as-preview img {
+  max-width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+}
+
+.save-as-output {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.save-as-output strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Each tab's viewport content lives in its own .tab-pane. All open
+   tab-panes stay mounted; only the active one is `display: block`. This
+   makes tab switching a CSS flip rather than a React/Konva re-render. */
+.tab-pane {
+  position: absolute;
+  inset: 0;
+}
+
+/* Tab bar — sits between the toolbar and the workspace. Renders only
+   when at least one tab is open. */
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  padding: 0 6px;
+  background: var(--bg-toolbar);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  min-height: 32px;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 110px;
+  max-width: 220px;
+  padding: 0 6px 0 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border-top: 2px solid transparent;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tab.active {
+  color: var(--text);
+  background: var(--bg-panel);
+  border-top-color: var(--accent);
+  border-bottom-color: var(--bg-panel);
+}
+
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-close {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+/* Heavier stroke than the icon's default 1.75 so the X reads clearly at
+   the small tab-row size. CSS inheritance overrides the SVG attribute. */
+.tab-close svg {
+  stroke-width: 2.4;
+}
+
+.tab-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+.tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.tab-add:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Welcome modal — shown once per install. Slightly narrower, warmer
+   typography than utility modals. */
+.welcome-modal {
+  width: min(480px, calc(100vw - 80px));
+}
+
+.welcome-body {
+  padding: 32px 36px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.welcome-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  background: linear-gradient(120deg, #6e8cff 0%, #b07be8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.welcome-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  max-width: 40ch;
+}
+
+.welcome-bullets {
+  margin: 8px 0 4px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  max-width: 38ch;
+}
+
+.welcome-bullets li {
+  position: relative;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.welcome-bullets li::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.welcome-bullets strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.welcome-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.welcome-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+.welcome-btn {
+  margin-top: 10px;
+  min-width: 140px;
 }

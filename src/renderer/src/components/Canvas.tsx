@@ -5,6 +5,7 @@ import type Konva from 'konva'
 
 type KonvaImageType = Konva.Image
 import type {
+  DisplayBounds,
   DraggingGuide,
   GridConfig,
   Guide,
@@ -13,7 +14,7 @@ import type {
   ParsedPsd,
   Tool,
 } from '../types'
-import { blobUrlFor } from '../lib/blob-url'
+import { cachedDecodedImage, decodeImage } from '../lib/blob-url'
 import { flattenLeaves } from '../lib/layers'
 import { screenToDoc, zoomAt, type ViewState } from '../lib/view'
 
@@ -21,6 +22,8 @@ const CLICK_THRESHOLD_PX = 3
 
 interface CanvasProps {
   doc: ParsedPsd
+  /** Visible doc bounds — full doc when no crop, the cropRect when one is active. */
+  displayBounds: DisplayBounds
   visibility: Record<string, boolean>
   offsets: Record<string, LayerOffset>
   selection: Set<string>
@@ -70,24 +73,41 @@ interface CanvasProps {
   viewportWidth: number
   viewportHeight: number
   onMousePos: (pos: { x: number; y: number } | null) => void
+  /**
+   * Two-finger / Ctrl-click on the canvas. Receives viewport coords and the
+   * topmost-hit layer id (or null if the click was on empty area). App
+   * uses this to populate the context menu.
+   */
+  onContextMenu: (clientX: number, clientY: number, layerId: string | null) => void
 }
 
 const GUIDE_HIT_TOLERANCE_PX = 5
 
 function useImageFromBytes(bytes: Uint8Array | undefined): HTMLImageElement | null {
-  const [image, setImage] = useState<HTMLImageElement | null>(null)
+  // Seed state from the cache so a re-mount (e.g. switching tabs) doesn't
+  // flash blank for a frame while waiting for an async decode that has
+  // already completed on a previous mount.
+  const [image, setImage] = useState<HTMLImageElement | null>(() => cachedDecodedImage(bytes))
   useEffect(() => {
     if (!bytes) {
       setImage(null)
       return
     }
-    const url = blobUrlFor(bytes)
-    if (!url) return
-    const img = new window.Image()
-    img.src = url
-    img.onload = () => setImage(img)
+    const cached = cachedDecodedImage(bytes)
+    if (cached) {
+      setImage(cached)
+      return
+    }
+    let cancelled = false
+    decodeImage(bytes)
+      .then((img) => {
+        if (!cancelled) setImage(img)
+      })
+      .catch(() => {
+        /* decode failure → layer simply doesn't render */
+      })
     return () => {
-      img.onload = null
+      cancelled = true
     }
   }, [bytes])
   return image
@@ -143,6 +163,7 @@ function buildGridLines(
 
 export function Canvas({
   doc,
+  displayBounds,
   visibility,
   offsets,
   selection,
@@ -173,6 +194,7 @@ export function Canvas({
   viewportWidth,
   viewportHeight,
   onMousePos,
+  onContextMenu,
 }: CanvasProps) {
   const stageRef = useRef(null)
   const dragStateRef = useRef<
@@ -230,6 +252,36 @@ export function Canvas({
 
   const effectiveTool: Tool = spaceHeld ? 'hand' : tool
 
+  // Hot-paths use these helpers so a future change to the "what counts as
+  // inside the visible doc" rule lives in one place.
+  const inDisplayBounds = (x: number, y: number): boolean =>
+    x >= displayBounds.x &&
+    x <= displayBounds.x + displayBounds.w &&
+    y >= displayBounds.y &&
+    y <= displayBounds.y + displayBounds.h
+
+  const clampXToDisplay = (x: number): number =>
+    Math.min(Math.max(x, displayBounds.x), displayBounds.x + displayBounds.w)
+  const clampYToDisplay = (y: number): number =>
+    Math.min(Math.max(y, displayBounds.y), displayBounds.y + displayBounds.h)
+
+  function handleContextMenu(e: KonvaEventObject<MouseEvent>) {
+    e.evt.preventDefault()
+    const stage = e.target.getStage()
+    if (!stage) {
+      onContextMenu(e.evt.clientX, e.evt.clientY, null)
+      return
+    }
+    const pointer = stage.getPointerPosition()
+    if (!pointer) {
+      onContextMenu(e.evt.clientX, e.evt.clientY, null)
+      return
+    }
+    const docPos = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
+    const layerId = inDisplayBounds(docPos.x, docPos.y) ? hitTestLayer(docPos.x, docPos.y) : null
+    onContextMenu(e.evt.clientX, e.evt.clientY, layerId)
+  }
+
   function handleWheel(e: KonvaEventObject<WheelEvent>) {
     e.evt.preventDefault()
     const stage = e.target.getStage()
@@ -249,13 +301,8 @@ export function Canvas({
     // Cmd (Mac) / Alt (Win) + click: solo the topmost layer under cursor.
     // Takes precedence over plain-click select/drag and over Shift+click.
     if (e.evt.metaKey || e.evt.altKey) {
-      const docPosForSelect = screenToDoc(view, pointer.x, pointer.y)
-      const inDoc =
-        docPosForSelect.x >= 0 &&
-        docPosForSelect.x <= doc.width &&
-        docPosForSelect.y >= 0 &&
-        docPosForSelect.y <= doc.height
-      if (inDoc) {
+      const docPosForSelect = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
+      if (inDisplayBounds(docPosForSelect.x, docPosForSelect.y)) {
         const hitId = hitTestLayer(docPosForSelect.x, docPosForSelect.y)
         if (hitId) onCanvasSoloLayer(hitId)
       }
@@ -263,15 +310,10 @@ export function Canvas({
     }
 
     // Guide grab takes priority over tool action.
-    const docPosForHit = screenToDoc(view, pointer.x, pointer.y)
+    const docPosForHit = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
     const tolDoc = GUIDE_HIT_TOLERANCE_PX / view.scale
     for (const g of guides) {
-      const inDocBounds =
-        docPosForHit.x >= 0 &&
-        docPosForHit.x <= doc.width &&
-        docPosForHit.y >= 0 &&
-        docPosForHit.y <= doc.height
-      if (!inDocBounds) continue
+      if (!inDisplayBounds(docPosForHit.x, docPosForHit.y)) continue
       const distance =
         g.orientation === 'vertical'
           ? Math.abs(docPosForHit.x - g.pos)
@@ -283,10 +325,8 @@ export function Canvas({
     }
 
     if (effectiveTool === 'select') {
-      const docPos = screenToDoc(view, pointer.x, pointer.y)
-      const inDoc =
-        docPos.x >= 0 && docPos.x <= doc.width && docPos.y >= 0 && docPos.y <= doc.height
-      const hitId = inDoc ? hitTestLayer(docPos.x, docPos.y) : null
+      const docPos = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
+      const hitId = inDisplayBounds(docPos.x, docPos.y) ? hitTestLayer(docPos.x, docPos.y) : null
 
       if (e.evt.shiftKey) {
         // Shift+click adds/removes from selection. No drag.
@@ -324,7 +364,7 @@ export function Canvas({
       // we silently do nothing — same behavior as Photoshop's eraser.
       if (selection.size !== 1) return
       const layerId = Array.from(selection)[0]
-      const docPos = screenToDoc(view, pointer.x, pointer.y)
+      const docPos = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
       if (!onEraseStrokeBegin(layerId)) return
       onEraseStrokeDot(layerId, docPos.x, docPos.y, brushSize / 2)
       dragStateRef.current = {
@@ -345,11 +385,11 @@ export function Canvas({
         origOffsetY: view.offsetY,
       }
     } else if (effectiveTool === 'marquee') {
-      const docPos = screenToDoc(view, pointer.x, pointer.y)
-      // Clamp start to canvas bounds — drags from outside still produce a sensible
-      // in-canvas marquee as the cursor enters the document.
-      const startDocX = Math.min(Math.max(docPos.x, 0), doc.width)
-      const startDocY = Math.min(Math.max(docPos.y, 0), doc.height)
+      const docPos = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
+      // Clamp start to the visible doc bounds — drags from outside still produce
+      // a sensible in-canvas marquee as the cursor enters the document.
+      const startDocX = clampXToDisplay(docPos.x)
+      const startDocY = clampYToDisplay(docPos.y)
       dragStateRef.current = {
         kind: 'marquee',
         startScreenX: pointer.x,
@@ -370,7 +410,7 @@ export function Canvas({
       onMousePos(null)
       return
     }
-    const docPos = screenToDoc(view, pointer.x, pointer.y)
+    const docPos = screenToDoc(view, pointer.x, pointer.y, displayBounds.x, displayBounds.y)
     onMousePos(docPos)
     if (effectiveTool === 'eraser') {
       setCursorDoc(docPos)
@@ -381,10 +421,8 @@ export function Canvas({
     // Update hover-near-guide cursor when not dragging.
     if (!dragStateRef.current) {
       const tolDoc = GUIDE_HIT_TOLERANCE_PX / view.scale
-      const inDocBounds =
-        docPos.x >= 0 && docPos.x <= doc.width && docPos.y >= 0 && docPos.y <= doc.height
       let nearest: 'vertical' | 'horizontal' | null = null
-      if (inDocBounds) {
+      if (inDisplayBounds(docPos.x, docPos.y)) {
         for (const g of guides) {
           const d =
             g.orientation === 'vertical'
@@ -446,8 +484,8 @@ export function Canvas({
       const dy = pointer.y - drag.startScreenY
       drag.maxMoveSq = Math.max(drag.maxMoveSq, dx * dx + dy * dy)
       // Always paint the marquee from the very first pixel of movement.
-      const clampedX = Math.min(Math.max(docPos.x, 0), doc.width)
-      const clampedY = Math.min(Math.max(docPos.y, 0), doc.height)
+      const clampedX = clampXToDisplay(docPos.x)
+      const clampedY = clampYToDisplay(docPos.y)
       const x = Math.min(drag.startDocX, clampedX)
       const y = Math.min(drag.startDocY, clampedY)
       const width = Math.abs(clampedX - drag.startDocX)
@@ -527,8 +565,8 @@ export function Canvas({
       ref={stageRef}
       width={viewportWidth}
       height={viewportHeight}
-      x={view.offsetX}
-      y={view.offsetY}
+      x={view.offsetX - displayBounds.x * view.scale}
+      y={view.offsetY - displayBounds.y * view.scale}
       scaleX={view.scale}
       scaleY={view.scale}
       onWheel={handleWheel}
@@ -536,14 +574,15 @@ export function Canvas({
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseLeave}
+      onContextMenu={handleContextMenu}
       style={{ cursor }}
     >
       <Layer listening={false}>
         <Rect
-          x={0}
-          y={0}
-          width={doc.width}
-          height={doc.height}
+          x={displayBounds.x}
+          y={displayBounds.y}
+          width={displayBounds.w}
+          height={displayBounds.h}
           fillPatternImage={checkerImage ?? undefined}
           fillPatternRepeat="repeat"
           fillPatternScaleX={1 / view.scale}
@@ -556,7 +595,12 @@ export function Canvas({
       </Layer>
       <Layer
         listening={false}
-        clip={{ x: 0, y: 0, width: doc.width, height: doc.height }}
+        clip={{
+          x: displayBounds.x,
+          y: displayBounds.y,
+          width: displayBounds.w,
+          height: displayBounds.h,
+        }}
       >
         {leaves.map((leaf) => {
           if (!leaf.node.image) return null
@@ -576,10 +620,10 @@ export function Canvas({
       </Layer>
       <Layer listening={false}>
         <Rect
-          x={0}
-          y={0}
-          width={doc.width}
-          height={doc.height}
+          x={displayBounds.x}
+          y={displayBounds.y}
+          width={displayBounds.w}
+          height={displayBounds.h}
           stroke="rgba(255,255,255,0.45)"
           strokeWidth={1 / view.scale}
           fillEnabled={false}
@@ -587,7 +631,15 @@ export function Canvas({
         />
       </Layer>
       {gridLines.length > 0 && (
-        <Layer listening={false}>
+        <Layer
+          listening={false}
+          clip={{
+            x: displayBounds.x,
+            y: displayBounds.y,
+            width: displayBounds.w,
+            height: displayBounds.h,
+          }}
+        >
           {gridLines.map((g) => (
             <Line
               key={g.key}
@@ -597,10 +649,10 @@ export function Canvas({
             />
           ))}
           <Rect
-            x={0}
-            y={0}
-            width={doc.width}
-            height={doc.height}
+            x={displayBounds.x}
+            y={displayBounds.y}
+            width={displayBounds.w}
+            height={displayBounds.h}
             stroke="rgba(74, 163, 255, 0.28)"
             strokeWidth={1 / view.scale}
             fillEnabled={false}
@@ -608,7 +660,15 @@ export function Canvas({
         </Layer>
       )}
       {effectiveTool !== 'marquee' && selectedBoxes.length > 0 && (
-        <Layer listening={false}>
+        <Layer
+          listening={false}
+          clip={{
+            x: displayBounds.x,
+            y: displayBounds.y,
+            width: displayBounds.w,
+            height: displayBounds.h,
+          }}
+        >
           {selectedBoxes.map((box) => (
             <Rect
               key={box.id}
@@ -639,7 +699,15 @@ export function Canvas({
         </Layer>
       )}
       {(guides.length > 0 || draggingGuide) && (
-        <Layer listening={false}>
+        <Layer
+          listening={false}
+          clip={{
+            x: displayBounds.x,
+            y: displayBounds.y,
+            width: displayBounds.w,
+            height: displayBounds.h,
+          }}
+        >
           {guides.map((g) =>
             g.orientation === 'vertical' ? (
               <Line
@@ -677,30 +745,40 @@ export function Canvas({
             ))}
         </Layer>
       )}
-      {effectiveTool === 'eraser' && cursorDoc && (
-        <Layer listening={false}>
-          <Circle
-            x={cursorDoc.x}
-            y={cursorDoc.y}
-            radius={brushSize / 2}
-            stroke={selection.size === 1 ? '#ffffff' : '#ff6b6b'}
-            strokeWidth={1.5 / view.scale}
-            shadowColor="rgba(0,0,0,0.6)"
-            shadowBlur={2 / view.scale}
-            shadowEnabled
-            listening={false}
-          />
-          <Circle
-            x={cursorDoc.x}
-            y={cursorDoc.y}
-            radius={brushSize / 2}
-            stroke="rgba(0,0,0,0.65)"
-            strokeWidth={1 / view.scale}
-            dash={[3 / view.scale, 3 / view.scale]}
-            listening={false}
-          />
-        </Layer>
-      )}
+      {effectiveTool === 'eraser' && cursorDoc && (() => {
+        // Clamp the *visual* radius so the cursor doesn't balloon off the
+        // doc on small banners with a large brush size. The brush itself
+        // (which controls actual erase area) is unchanged.
+        const visualRadius = Math.min(
+          brushSize / 2,
+          displayBounds.w / 2,
+          displayBounds.h / 2,
+        )
+        return (
+          <Layer listening={false}>
+            <Circle
+              x={cursorDoc.x}
+              y={cursorDoc.y}
+              radius={visualRadius}
+              stroke={selection.size === 1 ? '#ffffff' : '#ff6b6b'}
+              strokeWidth={1.5 / view.scale}
+              shadowColor="rgba(0,0,0,0.6)"
+              shadowBlur={2 / view.scale}
+              shadowEnabled
+              listening={false}
+            />
+            <Circle
+              x={cursorDoc.x}
+              y={cursorDoc.y}
+              radius={visualRadius}
+              stroke="rgba(0,0,0,0.65)"
+              strokeWidth={1 / view.scale}
+              dash={[3 / view.scale, 3 / view.scale]}
+              listening={false}
+            />
+          </Layer>
+        )
+      })()}
     </Stage>
   )
 }

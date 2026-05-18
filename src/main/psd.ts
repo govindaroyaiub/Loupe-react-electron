@@ -1,6 +1,7 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { Canvas, createCanvas } from '@napi-rs/canvas'
+import { Canvas, createCanvas, loadImage } from '@napi-rs/canvas'
 import { initializeCanvas, readPsd, Layer, Psd } from 'ag-psd'
 
 initializeCanvas((width: number, height: number) => createCanvas(width, height) as never)
@@ -118,4 +119,62 @@ export function parsePsdFile(filePath: string): ParsedPsd {
     layers,
     totalLeafCount: countLeaves(layers),
   }
+}
+
+/**
+ * Parse a flat raster image (PNG / JPG) as a single-layer document. The
+ * resulting `ParsedPsd` has one leaf layer covering the entire canvas, so
+ * everything that operates on layers (visibility, selection, hit-test,
+ * eraser, export) keeps working without special-casing image documents.
+ */
+export async function parseImageFile(filePath: string): Promise<ParsedPsd> {
+  const buffer = fs.readFileSync(filePath)
+  const image = await loadImage(buffer)
+  const w = image.width
+  const h = image.height
+
+  // Decode into a canvas so we can re-encode as PNG bytes (the renderer
+  // expects PNG-encoded `layer.image` regardless of source format) and
+  // build a thumbnail. For very large source images this is still fast.
+  const c = createCanvas(w, h)
+  const ctx = c.getContext('2d')
+  ctx.drawImage(image, 0, 0)
+  const pngBytes = new Uint8Array(c.toBuffer('image/png'))
+
+  const baseName = path.basename(filePath, path.extname(filePath))
+
+  const leaf: LayerNode = {
+    id: randomUUID(),
+    name: baseName || 'Image',
+    kind: 'layer',
+    visible: true,
+    opacity: 1,
+    blendMode: 'normal',
+    bounds: { left: 0, top: 0, right: w, bottom: h },
+    flags: {
+      text: false,
+      mask: false,
+      clipping: false,
+      smartObject: false,
+      adjustment: false,
+      effects: false,
+    },
+    image: pngBytes,
+    thumbnail: makeThumbnail(c),
+  }
+
+  return {
+    width: w,
+    height: h,
+    hasComposite: true,
+    composite: pngBytes,
+    layers: [leaf],
+    totalLeafCount: 1,
+  }
+}
+
+/** Detect file type by extension. Anything not PSD is treated as a raster image. */
+export function isImageExt(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase()
+  return ext === '.png' || ext === '.jpg' || ext === '.jpeg'
 }

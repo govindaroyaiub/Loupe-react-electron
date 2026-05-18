@@ -1,13 +1,18 @@
 import { useMemo } from 'react'
 import type { ViewState } from '../lib/view'
-import type { GuideOrientation } from '../types'
+import type { DisplayBounds, GuideOrientation } from '../types'
 
 interface RulersProps {
   view: ViewState
   viewportWidth: number
   viewportHeight: number
-  docWidth: number
-  docHeight: number
+  /**
+   * Visible document bounds. Tick labels and the shaded band reflect this
+   * region (full doc when no crop, the cropRect when one is active). Tick
+   * values are displayed relative to `displayBounds.{x,y}` so the visible
+   * region always reads from 0.
+   */
+  displayBounds: DisplayBounds
   is2x: boolean
   mousePos: { x: number; y: number } | null
   onGuideDragStart: (orientation: GuideOrientation, e: React.MouseEvent) => void
@@ -66,18 +71,21 @@ export function Rulers({
   view,
   viewportWidth,
   viewportHeight,
-  docWidth,
-  docHeight,
+  displayBounds,
+  is2x,
   mousePos,
   onGuideDragStart,
 }: RulersProps) {
   const step = useMemo(() => pickStep(view.scale), [view.scale])
 
-  // Positions in the ruler SVGs' own coordinate space (which matches stage-container coords).
+  // Positions in the ruler SVGs' own coordinate space (which matches
+  // stage-container coords). Because the Stage is translated by
+  // `-displayBounds.{x,y} * scale`, the *visible* doc origin (displayBounds.x,
+  // .y) sits at screen view.offsetX/Y. So docZero* lands at view.offset*.
   const docZeroX = view.offsetX
-  const docMaxX = view.offsetX + docWidth * view.scale
+  const docMaxX = view.offsetX + displayBounds.w * view.scale
   const docZeroY = view.offsetY
-  const docMaxY = view.offsetY + docHeight * view.scale
+  const docMaxY = view.offsetY + displayBounds.h * view.scale
 
   const topSvgLength = Math.max(0, viewportWidth - RULER_THICKNESS)
   const leftSvgLength = Math.max(0, viewportHeight - RULER_THICKNESS)
@@ -91,8 +99,20 @@ export function Rulers({
     [leftSvgLength, docZeroY, docMaxY, view.scale, step],
   )
 
-  const mouseSvgX = mousePos ? mousePos.x * view.scale + view.offsetX : null
-  const mouseSvgY = mousePos ? mousePos.y * view.scale + view.offsetY : null
+  // Mouse position from Canvas is in absolute doc coords; subtract the
+  // displayBounds origin so the indicator aligns with the (cropped) visible
+  // region on the rulers.
+  const mouseSvgX = mousePos ? (mousePos.x - displayBounds.x) * view.scale + view.offsetX : null
+  const mouseSvgY = mousePos ? (mousePos.y - displayBounds.y) * view.scale + view.offsetY : null
+
+  // Midpoint of the visible doc — a small accent-colored triangle pointing
+  // toward the canvas. Useful for centering content visually.
+  const midDocX = displayBounds.w / 2
+  const midDocY = displayBounds.h / 2
+  const midSvgX = midDocX * view.scale + view.offsetX
+  const midSvgY = midDocY * view.scale + view.offsetY
+  const midShownX = midSvgX >= 0 && midSvgX <= topSvgLength && displayBounds.w > 0
+  const midShownY = midSvgY >= 0 && midSvgY <= leftSvgLength && displayBounds.h > 0
 
   return (
     <>
@@ -158,6 +178,31 @@ export function Rulers({
             />
           )
         })}
+
+        {/* Midpoint marker — small triangle at half the visible width. */}
+        {midShownX && (
+          <g>
+            <line
+              x1={midSvgX}
+              x2={midSvgX}
+              y1={6}
+              y2={RULER_THICKNESS}
+              stroke="rgba(74, 163, 255, 0.55)"
+              strokeWidth={1}
+              strokeDasharray="2 2"
+            />
+            <polygon
+              points={`${midSvgX - 4},0 ${midSvgX + 4},0 ${midSvgX},6`}
+              fill="var(--accent)"
+            >
+              <title>
+                {`Midpoint ${midDocX}px${
+                  is2x ? ` @2x · ${midDocX / 2} @1x` : ''
+                }`}
+              </title>
+            </polygon>
+          </g>
+        )}
 
         {/* Mouse indicator */}
         {mouseSvgX !== null && mouseSvgX >= 0 && mouseSvgX <= topSvgLength && (
@@ -228,6 +273,31 @@ export function Rulers({
             />
           )
         })}
+
+        {/* Midpoint marker — small triangle at half the visible height. */}
+        {midShownY && (
+          <g>
+            <line
+              x1={6}
+              x2={RULER_THICKNESS}
+              y1={midSvgY}
+              y2={midSvgY}
+              stroke="rgba(74, 163, 255, 0.55)"
+              strokeWidth={1}
+              strokeDasharray="2 2"
+            />
+            <polygon
+              points={`0,${midSvgY - 4} 0,${midSvgY + 4} 6,${midSvgY}`}
+              fill="var(--accent)"
+            >
+              <title>
+                {`Midpoint ${midDocY}px${
+                  is2x ? ` @2x · ${midDocY / 2} @1x` : ''
+                }`}
+              </title>
+            </polygon>
+          </g>
+        )}
 
         {mouseSvgY !== null && mouseSvgY >= 0 && mouseSvgY <= leftSvgLength && (
           <line

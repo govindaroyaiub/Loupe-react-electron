@@ -23,7 +23,7 @@ This is the spec for a **doc-level Photoshop-style `Image > Crop`** — not per-
 - Sidecar persistence (writing the crop to a file next to the .psd so it survives reopen). The crop is session-only.
 - A separate Crop tool in the ToolPalette with drag handles.
 - Keyboard shortcut for Apply / Reset. Can be added later if it earns its place.
-- Adjusting saved Rules' coordinates when crop changes.
+- Translating or copying saved Rules into the cropped space when crop changes (Rules are always stored in original-doc coords).
 
 ## State and architecture
 
@@ -49,7 +49,7 @@ Every component that currently reads `doc.width` / `doc.height` reads `displayBo
 ### Apply flow
 
 1. User drags a marquee with the existing Marquee tool.
-2. `MarqueePanel` shows a new `Crop` button to the left of `+ Rule`.
+2. `MarqueePanel` shows a new `Crop` button, immediately left of the close `✕`. (The "+ Rule" button was removed from `MarqueePanel` in a separate cleanup; only the `✕` neighbor remains.)
 3. Button is disabled when the marquee is zero-area or fully outside the doc.
 4. Click → compute the intersection of the marquee with the doc bounds → `setCropRect(intersection)` → close the marquee → fire the existing `zoom-fit` canvas action so the cropped doc fills the viewport.
 
@@ -70,9 +70,9 @@ Every component that currently reads `doc.width` / `doc.height` reads `displayBo
 | `Canvas` | Konva stage translates by `(-cropRect.x, -cropRect.y)` and clips its viewport to `displayBounds.w × .h`. Checker background, layer images, grid, selection highlights, guides, marquee, all draw under that translation. Layers fully outside the crop become invisible naturally. On crop apply / reset, dispatches the existing `zoom-fit` action. |
 | `Rulers` | Tick origin is `(0,0)` of `displayBounds`. Top ruler runs `0 … displayBounds.w`; left ruler runs `0 … displayBounds.h`. Dual @1x/@2x ticks still apply. Document-edge markers track `displayBounds`. |
 | `Grid` | Confined to `displayBounds`. Grid spacing unchanged. |
-| `Marquee` | Remains usable while cropped. Marquee rect is captured and stored in **crop-relative** coords while a crop is active. Rules saved from a cropped marquee record their coordinate space as `'crop'` (see Rules below). |
+| `Marquee` | Remains usable while cropped. Marquee rect is always stored in **original-doc** coords. The `MarqueePanel` display subtracts `displayBounds.{x,y}` for the `x/y` readout, and uses `displayBounds.{w,h}` as the denominator for `%` snippets, so the numbers feel local to the cropped view. |
 | `Guides` | Stored in **original doc** coords. While cropped, only guides whose position is inside `cropRect` are rendered. Render position is `guidePosition - cropRect.{x,y}`. Dragging an existing guide updates the original-doc coord by adding the drag delta. New guides dragged from rulers while cropped are stored at `dragPosition + cropRect.{x,y}` so they live in original-doc space. |
-| `Rules` | Each `Rule` gets an optional `space: 'doc' \| 'crop'` field. Existing rules implicitly default to `'doc'`. Rules created while cropped record `space: 'crop'`. The rules panel labels crop-space rules subtly (e.g., "(cropped)" suffix) so the user knows the coords are local. Re-cropping does **not** translate or invalidate existing rules. |
+| `Rules` | The `Rule` type is unchanged — coordinates always live in original-doc space. While cropped, `RulesPanel` displays numbers translated by `-displayBounds.{x,y}` and uses `displayBounds.{w,h}` for `%` denominators. Rules whose rect/point falls fully outside the current crop render muted with an "(outside crop)" suffix and their click handlers no-op. Resetting the crop restores the full doc display. |
 | `StatusBar` | While cropped, the mouse-position columns show crop-relative coords. Marquee size readout is unchanged (always reports the active marquee size). |
 | `Toolbar` | Dimensions readout, while cropped, shows the cropped W×H with a faded `(of full 1200×600)` suffix so context is never lost. The reset pill sits in the same row. |
 | `ExportModal` | Adds a single-line note above the preview list: `Output cropped to 580 × 340 px` when `cropRect != null`. No new controls. |
@@ -90,7 +90,7 @@ Every component that currently reads `doc.width` / `doc.height` reads `displayBo
 
 ## UI placement summary
 
-- **Apply:** `Crop` button inside `MarqueePanel`, immediately left of `+ Rule`, left of the close `✕`.
+- **Apply:** `Crop` button inside `MarqueePanel`, immediately left of the close `✕`.
 - **Reset / status:** `Cropped 580×340 ✕` pill in the `Toolbar`, between the dimensions readout and the `Open` / `Export` buttons; shown only while `cropRect != null`.
 - **No new tool, no new keyboard shortcut, no new menu item** in v1.
 

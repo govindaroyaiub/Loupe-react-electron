@@ -30,7 +30,7 @@ const TOOLS: { id: Tool; label: string; shortcut: string; Icon: IconComponent }[
   { id: 'select', label: 'Select', shortcut: 'V', Icon: SelectIcon },
   { id: 'marquee', label: 'Marquee', shortcut: 'M', Icon: MarqueeIcon },
   { id: 'eraser', label: 'Eraser', shortcut: 'E', Icon: EraserIcon },
-  { id: 'hand', label: 'Hand (Space)', shortcut: 'H', Icon: HandIcon },
+  { id: 'hand', label: 'Hand', shortcut: 'H', Icon: HandIcon },
 ]
 
 export function ToolPalette({

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { LayerNode } from '../types'
 import { blobUrlFor } from '../lib/blob-url'
 import { ChevronDownIcon, ChevronRightIcon, EyeOffIcon, EyeOnIcon, FolderIcon } from './icons'
@@ -11,9 +12,34 @@ interface LayersPanelProps {
   onSelect: (id: string, opts: { meta: boolean; shift: boolean }) => void
   onClearSelection: () => void
   onToggleCollapsedGroup: (id: string) => void
+  /**
+   * Un-collapse the given group ids in a single state update. Used when
+   * auto-revealing a layer that lives inside collapsed parents.
+   */
+  onExpandGroups: (ids: string[]) => void
   onSoloLayer: (id: string) => void
   isModKeyHeld: () => boolean
   onShowAll: () => void
+}
+
+/**
+ * Walk the layer tree and return the ids of every group that contains the
+ * target leaf (root → leaf order). Empty array if not found.
+ */
+function findAncestorGroupIds(layers: LayerNode[], targetId: string): string[] {
+  const path: string[] = []
+  function walk(nodes: LayerNode[], parents: string[]): boolean {
+    for (const n of nodes) {
+      if (n.id === targetId) {
+        path.push(...parents)
+        return true
+      }
+      if (n.children && walk(n.children, [...parents, n.id])) return true
+    }
+    return false
+  }
+  walk(layers, [])
+  return path
 }
 
 interface LayerRowProps {
@@ -61,7 +87,8 @@ function LayerRow({
     <>
       <div
         className={`layer-row${isSelected ? ' selected' : ''}`}
-        style={{ paddingLeft: 8 + depth * 14 }}
+        data-layer-id={node.id}
+        style={{ paddingLeft: 8 + depth * 16 }}
         onClick={(e) => {
           if (isGroup) return
           onSelect(node.id, { meta: e.metaKey || e.ctrlKey, shift: e.shiftKey })
@@ -82,7 +109,7 @@ function LayerRow({
             }
           }}
         >
-          {visible ? <EyeOnIcon size={10} /> : <EyeOffIcon size={10} />}
+          {visible ? <EyeOnIcon size={14} /> : <EyeOffIcon size={14} />}
         </button>
         <div className="thumb">
           {isGroup ? (
@@ -115,7 +142,7 @@ function LayerRow({
               onToggleCollapsedGroup(node.id)
             }}
           >
-            {isCollapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
+            {isCollapsed ? <ChevronRightIcon size={14} /> : <ChevronDownIcon size={14} />}
           </button>
         )}
       </div>
@@ -149,10 +176,35 @@ export function LayersPanel({
   onSelect,
   onClearSelection,
   onToggleCollapsedGroup,
+  onExpandGroups,
   onSoloLayer,
   isModKeyHeld,
   onShowAll,
 }: LayersPanelProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+
+  // When a single layer is selected (e.g. via canvas click, ⌘+click solo,
+  // or Trim), reveal its row in the panel: un-collapse any ancestor groups
+  // it's hidden inside, then scroll its row into view. `block: 'nearest'`
+  // keeps the row in place if it's already visible.
+  useEffect(() => {
+    if (selection.size !== 1) return
+    const layerId = Array.from(selection)[0]
+    const ancestors = findAncestorGroupIds(layers, layerId)
+    const collapsed = ancestors.filter((id) => collapsedGroups.has(id))
+    if (collapsed.length > 0) {
+      onExpandGroups(collapsed)
+    }
+    // Run after the next render so any just-expanded rows are mounted.
+    const raf = requestAnimationFrame(() => {
+      const row = scrollRef.current?.querySelector<HTMLElement>(
+        `[data-layer-id="${CSS.escape(layerId)}"]`,
+      )
+      row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [selection, layers, collapsedGroups, onExpandGroups])
+
   return (
     <div className="layers-panel">
       <div className="panel-header">
@@ -168,7 +220,10 @@ export function LayersPanel({
           )}
         </div>
       </div>
-      <div className="layers-scroll" onClick={(e) => e.stopPropagation()}>
+      <div className="layers-hint">
+        Click eye to toggle · <kbd>⌘</kbd>-click to solo · right-click for more
+      </div>
+      <div className="layers-scroll" ref={scrollRef} onClick={(e) => e.stopPropagation()}>
         {layers.map((node) => (
           <LayerRow
             key={node.id}

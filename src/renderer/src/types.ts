@@ -53,6 +53,31 @@ export interface MarqueeRect {
   height: number
 }
 
+/**
+ * Non-destructive document crop rectangle. Always stored in original-doc
+ * (@2x) coordinate space, regardless of how it's displayed.
+ */
+export interface CropRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+
+/**
+ * The currently-visible document bounds. Equal to the full doc when no crop
+ * is active; equal to the cropRect when one is. Components that used to read
+ * `doc.width/height` directly should read this instead so they automatically
+ * follow the crop.
+ */
+export interface DisplayBounds {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 export interface GridConfig {
   enabled: boolean
   /** Spacing in document (@2x) pixels */

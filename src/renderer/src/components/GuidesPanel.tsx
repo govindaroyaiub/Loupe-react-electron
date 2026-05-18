@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react'
-import type { Guide } from '../types'
+import type { DisplayBounds, Guide } from '../types'
 import { CloseIcon } from './icons'
 
 interface GuidesPanelProps {
   guides: Guide[]
-  docWidth: number
-  docHeight: number
+  /**
+   * Visible doc bounds. Guides outside the visible region are hidden, and
+   * positions are displayed relative to the visible region's origin.
+   */
+  displayBounds: DisplayBounds
   is2x: boolean
   onClear: () => void
   onSaveIntersectionAsRule: (point: { x: number; y: number }) => void
@@ -18,8 +21,7 @@ function round(n: number, digits = 1): number {
 
 export function GuidesPanel({
   guides,
-  docWidth,
-  docHeight,
+  displayBounds,
   is2x,
   onClear,
   onSaveIntersectionAsRule,
@@ -28,9 +30,31 @@ export function GuidesPanel({
   const [mode, setMode] = useState<'px' | 'pct'>('px')
   const [copied, setCopied] = useState<string | null>(null)
 
-  const verticals = useMemo(() => guides.filter((g) => g.orientation === 'vertical'), [guides])
-  const horizontals = useMemo(() => guides.filter((g) => g.orientation === 'horizontal'), [guides])
+  // Only guides inside the visible doc region appear in the panel. Outside
+  // ones still exist in App state (so they reappear after Reset), they just
+  // can't be acted on while invisible.
+  const verticals = useMemo(
+    () =>
+      guides.filter(
+        (g) =>
+          g.orientation === 'vertical' &&
+          g.pos >= displayBounds.x &&
+          g.pos <= displayBounds.x + displayBounds.w,
+      ),
+    [guides, displayBounds.x, displayBounds.w],
+  )
+  const horizontals = useMemo(
+    () =>
+      guides.filter(
+        (g) =>
+          g.orientation === 'horizontal' &&
+          g.pos >= displayBounds.y &&
+          g.pos <= displayBounds.y + displayBounds.h,
+      ),
+    [guides, displayBounds.y, displayBounds.h],
+  )
 
+  // Intersection coords stay in absolute doc-space; we translate at display.
   const intersection = useMemo(() => {
     if (verticals.length === 1 && horizontals.length === 1) {
       return { x: verticals[0].pos, y: horizontals[0].pos }
@@ -41,11 +65,12 @@ export function GuidesPanel({
   const scale = unit === '1x' ? 0.5 : 1
 
   function fmtPos(pos: number, dim: 'x' | 'y'): string {
+    const local = dim === 'x' ? pos - displayBounds.x : pos - displayBounds.y
     if (mode === 'pct') {
-      const total = dim === 'x' ? docWidth : docHeight
-      return `${round((pos / total) * 100, 2)}%`
+      const total = dim === 'x' ? displayBounds.w : displayBounds.h
+      return `${round((local / total) * 100, 2)}%`
     }
-    return `${round(pos * scale, 1)}px`
+    return `${round(local * scale, 1)}px`
   }
 
   async function copy(label: string, text: string) {
@@ -60,13 +85,15 @@ export function GuidesPanel({
 
   let intersectionSnippet: { transformOrigin: string } | null = null
   if (intersection) {
+    const localX = intersection.x - displayBounds.x
+    const localY = intersection.y - displayBounds.y
     if (mode === 'pct') {
-      const px = round((intersection.x / docWidth) * 100, 2)
-      const py = round((intersection.y / docHeight) * 100, 2)
+      const px = round((localX / displayBounds.w) * 100, 2)
+      const py = round((localY / displayBounds.h) * 100, 2)
       intersectionSnippet = { transformOrigin: `transform-origin: ${px}% ${py}%;` }
     } else {
-      const px = round(intersection.x * scale, 1)
-      const py = round(intersection.y * scale, 1)
+      const px = round(localX * scale, 1)
+      const py = round(localY * scale, 1)
       intersectionSnippet = { transformOrigin: `transform-origin: ${px}px ${py}px;` }
     }
   }
